@@ -1,0 +1,195 @@
+<?php
+define('SUPPORTGROUPS_POINTS_SUPPORT', 10 );
+define('SUPPORTGROUPS_POINTS_UNSUPPORT', -10 );
+define('SUPPORTGROUPS_POINTS_FLAG', 5 );
+define('SUPPORTGROUPS_POINTS_UNFLAG', -5 );
+define('SUPPORTGROUPS_POINTS_JOIN_GROUP', 25 );
+define('SUPPORTGROUPS_POINTS_LEAVE_GROUP', -25 );
+define('SUPPORTGROUPS_POINTS_CAT', 4344 );
+
+/************************** Userpoints for Supporting **************************/
+
+/**
+ * Implementation of hook_user_relationships_insert
+ * Add points for supporting someone
+ */
+function supportgroups_points_user_relationships_save($relationship, $action) {
+  if ($relationship->rtid == 1) {
+    // Award the points.
+    userpoints_userpointsapi(array(
+      'points' => SUPPORTGROUPS_POINTS_SUPPORT,
+      'uid' => $relationship->requester_id,
+      'operation' => 'support',
+      'entity_id' => $relationship->requester_id,
+      'entity_type' => 'user',
+      'tid'         => SUPPORTGROUPS_POINTS_CAT,
+    ));
+  }
+}
+
+/**
+ * Implementation of hook_user_relationships_delete
+ * Remove points for unsupporting someone
+ */
+function supportgroups_points_user_relationships_delete($relationship, $action) {
+  if ($relationship->rtid == 1) {
+    // Remove the points.
+    userpoints_userpointsapi(array(
+      'points' => SUPPORTGROUPS_POINTS_UNSUPPORT,
+      'uid' => $relationship->requester_id,
+      'operation' => 'unsupport',
+      'entity_id' => $relationship->requester_id,
+      'entity_type' => 'user',
+      'tid'         => SUPPORTGROUPS_POINTS_CAT,
+    ));
+  }
+}
+
+/************************** End of Userpoints for Supporting *******************/
+
+
+
+
+/************************** Userpoints for Joining a group **************************/
+
+/**
+ * Implementation of hook_og_membership_insert
+ * Add points
+ *
+ * @param stdClass $og_membership
+ */
+function supportgroups_points_og_membership_insert($og_membership) {
+  global $user;
+  $group_count = '';
+  if( module_exists('supportgroups_utility') ){
+    $group_count = supportgroups_utility_group_count( $user->uid);  
+  }
+  // Only add points if the user is join in less than or equal to 10 groups
+  if( $group_count <= 10){
+    // add points if someone is joining a group
+    if($og_membership->entity_type == 'user'){
+      // Award the points.
+      userpoints_userpointsapi(array(
+        'points' => SUPPORTGROUPS_POINTS_JOIN_GROUP,
+        'uid' => $user->uid,
+        'operation' => 'join group',
+        'entity_id' => $user->uid,
+        'entity_type' => 'user',
+        'tid'         => SUPPORTGROUPS_POINTS_CAT,
+      ));
+    }
+  }
+}
+
+/**
+ * Implementation of hook_og_membership_delete
+ * Remove points
+ *
+ * @param stdClass $og_membership
+ */
+function supportgroups_points_og_membership_delete($og_membership) {
+  global $user;
+  $group_count = '';
+  if( module_exists('supportgroups_utility') ){
+    $group_count = supportgroups_utility_group_count( $user->uid);  
+  }
+  // Only add points if the user is join in less than or equal to 10 groups
+  if( $group_count <= 10){
+    // remove points if someone is leaving a group
+    if($og_membership->entity_type == 'user'){
+      // Award the points.
+      userpoints_userpointsapi(array(
+        'points' => SUPPORTGROUPS_POINTS_LEAVE_GROUP,
+        'uid' => $user->uid,
+        'operation' => 'leave group',
+        'entity_id' => $user->uid,
+        'entity_type' => 'user',
+        'tid'         => SUPPORTGROUPS_POINTS_CAT,
+      ));
+    }
+  }
+}
+
+/************************** End of Userpoints for Joining a group *******************/
+
+
+
+/************************** Userpoints for Likes **************************/
+/**
+ * Implementation of hook_flag
+ *
+ * Act on a flagging.
+ *
+ * @param $op
+ *  The operation being performed: one of 'flag' or 'unflag'.
+ * @param $flag
+ *  The flag object.
+ * @param $content_id
+ *  The id of the content (aka entity) the flag is on.
+ * @param $account
+ *  The user account performing the action.
+ * @param $fcid
+ *  The id of the flagging in the {flag_content} table.
+ */
+function supportgroups_points_flag($op, $flag, $content_id, $account, $fcid) {
+  // check to see if the $op is flag or unflag
+  if ($op == 'flag'){
+    // if the flag name is like or like_comments, then award the points
+    if( $flag->name == 'like' || $flag->name == 'like_comments' ){
+      // Award the points.
+      userpoints_userpointsapi(array(
+        'points' => SUPPORTGROUPS_POINTS_FLAG,
+        'uid' => $account->uid,
+        'operation' => 'heart',
+        'entity_id' => $account->uid,
+        'entity_type' => 'user',
+        'tid'         => SUPPORTGROUPS_POINTS_CAT,
+      ));
+    }
+  }
+  elseif( $op == 'unflag'){
+    // if the flag name is like or like_comments, then subtract the points
+    if( $flag->name == 'like' || $flag->name == 'like_comments' ){
+      // Award the points.
+      userpoints_userpointsapi(array(
+        'points' => SUPPORTGROUPS_POINTS_UNFLAG,
+        'uid' => $account->uid,
+        'operation' => 'unheart',
+        'entity_id' => $account->uid,
+        'entity_type' => 'user',
+        'tid'         => SUPPORTGROUPS_POINTS_CAT,
+      ));  
+    }
+  }
+}
+
+
+
+
+/************************** End of Userpoints for Likes **************************/
+
+
+/*************************Update Userpoints for profile fields ****************/
+/**
+ * Implementation of user_update
+ *  Update profile fields when a user saves their profile page
+ */
+function supportgroups_points_user_update(&$edit, $account, $category) {
+  if( ( strpos($_SERVER['REQUEST_URI'], 'profile-setting') !== false ) ){
+    $register = false;
+    $result = _profile_get_fields('About Me', $register);
+    foreach ($result as $field) {
+
+      if( $field->name == 'profile_bio'){
+      }
+      elseif( $field->name == 'profile_birthday'){
+      }
+      elseif( $field->name == 'profile_gender'){
+      }
+
+
+    }
+  }
+}
+
+/************************End of Userpoitns for profile fields ****************/

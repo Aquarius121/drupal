@@ -1,0 +1,4 @@
+name = Support Groups Comments
+description = This module will allow users to tag users when posting a comment
+core = 7.x
+package = Support Groups Features

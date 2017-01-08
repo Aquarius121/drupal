@@ -1,0 +1,60 @@
+/* viewing someone else's profile  */
+
+/* profile info at top of page */
+.view-profile-other {
+	background:white;
+	border-radius:10px;
+	padding:1.0em 1.0em 30px 1.0em;
+	box-shadow:3px 3px 3px #dddddd; }
+	.views-field-picture {
+		float:left;
+		margin-right:.7em;}
+		.user-picture {
+			border:1px solid #dddddd;
+			border-radius:6px;}
+
+	.views-field-name {
+		font-size:1.5em;
+		font-weight:bold;
+		line-height:1.0em;
+		padding-bottom:0.5em; }
+	.views-field-points {
+		float:left;
+		font-size:1.3em;}
+		.user_badges {
+			font-size:3.5em;
+			line-height:0.6em; }
+	
+	.views-field-status-link, .views-field-privatemsg-link {
+		text-align:right;
+		margin-bottom:1.0em;}
+		
+	.views-field-value {
+		clear:left;
+		font-size:1.3em;}
+
+/* support activity below profile info */
+/* style post */
+.view-profile-latest-post .views-row {
+	font-size:1.3em;
+	background:white; 
+	height:95px;
+	margin-bottom:1.0em;
+	padding:1.0em 1.0em 0 1.0em;
+	border-radius:10px;
+	border-top:1px solid #dddddd;
+	border-right:3px solid #dddddd;
+	border-bottom:3px solid #dddddd;
+	border-left:1px solid #dddddd; }
+	.profile-post-list .body {
+		padding:0.5em 0; }
+		.profile-post-list .body a {
+			color:#444444; }
+	.profile-post-list .comments {
+		float:right;
+		width:20px;
+		height:20px;
+		display:inline-block;
+		background:url(../images/icon-comments.png) no-repeat top left;
+		text-align:left;
+		padding-left:25px; }

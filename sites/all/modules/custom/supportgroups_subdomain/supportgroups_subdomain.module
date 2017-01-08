@@ -1,0 +1,499 @@
+<?php
+/**
+ * @file
+ * Code for Subdomain Field module.
+ */
+
+/**
+ * Implementation of hook_menu
+ *
+ * @return array
+ */
+function supportgroups_subdomain_menu() {
+  $items = array();
+
+  $items['admin/supportgroups/subdomain'] = array(
+    'access arguments' => array('administer site configuration'),
+    'title' => 'Subdomain Settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('supportgroups_subdomain_admin_settings_form'),
+    'file' => 'supportgroups_subdomain.admin.inc',
+    'type' => MENU_NORMAL_ITEM
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_field_info().
+ */
+function supportgroups_subdomain_field_info() {
+  return array(
+    'subdomain' => array(
+      'label' => t('Subdomain Field'),
+      'description' => t('Allows users to specify a subdomain for which the entity is accessible.'),
+      'default_widget' => 'text_textfield',
+      'default_formatter' => 'subdomain_formatter',
+      'settings' => array('max_length' => 255),
+      'instance_settings' => array('text_processing' => NULL),
+      'property_type' => 'text',
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function supportgroups_subdomain_field_formatter_info() {
+  return array(
+    'subdomain_formatter' => array(
+      'label' => t('Subdomain field formatter'),
+      'field types' => array('subdomain'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function supportgroups_subdomain_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+  switch ($display['type']) {
+    case 'subdomain_formatter':
+      foreach ($items as $delta => $item) {
+        $url = supportgroups_subdomain_get_url($item['value']);
+        $element[$delta] = array(
+          '#theme' => 'link',
+          '#text' => $url,
+          '#path' => $url,
+          '#options' => array('attributes' => array('class' => array('subdomain_field')), 'html' => FALSE),
+        );
+        break;
+      }
+  }
+  return $element;
+}
+/**
+ * Generate an URL based on the found subdomain.
+ *
+ * @param string $subdomain
+ *   The subdomain.
+ *
+ * @return string
+ *   The entire URL using that subdomain.
+ */
+function supportgroups_subdomain_get_url($subdomain) {
+  global $base_url, $cookie_domain;
+
+  switch (variable_get('supportgroups_environment', 'dev')) {
+    case 'live':
+      return SG_HTTP_PROTOCOL . $subdomain . str_replace(SG_HTTP_PROTOCOL . 'www', '', $base_url);
+      break;
+    case 'dev':
+
+      return SG_HTTP_PROTOCOL . $subdomain . str_replace(SG_HTTP_PROTOCOL . 'www', '', $base_url);
+      break;
+  }
+
+  // FIXME: handle subdomains with only numbers properly.
+  return SG_HTTP_PROTOCOL . $subdomain . '.' . str_replace(SG_HTTP_PROTOCOL, '', $base_url);
+
+  // return preg_replace('/(https?:\/\/)(.*)/', '$1' . $subdomain . $cookie_domain, $base_url);
+}
+/**
+ * Implements hook_field_widget_form().
+ */
+function supportgroups_subdomain_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  $element += array(
+    '#type' => $instance['widget']['type'],
+    '#default_value' => isset($items[$delta]) ? $items[$delta] : '',
+  );
+  return $element;
+}
+
+/**
+ * Implements hook_field_widget_error().
+ */
+function supportgroups_subdomain_field_widget_error($element, $error, $form, &$form_state) {
+  form_error($element, $error['message']);
+}
+
+/**
+ * Implements hook_field_is_empty().
+ */
+function supportgroups_subdomain_field_is_empty($item, $field) {
+  if (empty($item['value'])) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Implements hook_field_validate().
+ */
+function supportgroups_subdomain_field_validate($entity_type, $entity, $field, $instance, $langcode, $items, &$errors) {
+  // TODO: CHECK FOR EXISTING SUBDOMAIN.
+  foreach ($items as $delta => $item) {
+    if (!empty($item['value'])) {
+      // Subdomain is already in database.
+      if (!preg_match('/^[a-z0-9-\.]*$/', $item['value'])) {
+        $errors[$field['field_name']][$langcode][$delta][] = array(
+          'error' => 'text_max_length',
+          'message' => t('%name: the subdomain must only contain characters 0-9, a-z, . and -.', array('%name' => $instance['label'])),
+        );
+      }
+      if ($path = supportgroups_subdomain_get_by_subdomain($item['value'])) {
+        $uri = entity_uri($entity_type, $entity);
+        // And it's not pointing at this entity.
+        if ($uri['path'] != $path) {
+          $errors[$field['field_name']][$langcode][$delta][] = array(
+            'error' => 'already_used',
+            'message' => t('%name: the subdomain %subdomain is already in use.', array('%name' => $instance['label'], '%subdomain' => $item['value'])),
+          );
+        }
+      }
+      if (!empty($field['settings']['max_length']) && drupal_strlen($item['value']) > $field['settings']['max_length']) {
+        $errors[$field['field_name']][$langcode][$delta][] = array(
+          'error' => 'text_max_length',
+          'message' => t('%name: the value may not be longer than %max characters.', array('%name' => $instance['label'], '%max' => $field['settings']['max_length'])),
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_field_widget_info_alter().
+ */
+function supportgroups_subdomain_field_widget_info_alter(&$info) {
+  $info['text_textfield']['field types'][] = 'subdomain';
+}
+
+/**
+ * Implements hook_url_inbound_alter().
+ */
+function supportgroups_subdomain_url_inbound_alter(&$path, $original_path, $path_language) {
+  // Does nothing if a non-existing autogenerated image is requested.
+  $router_item = menu_get_item($path);
+  if ($router_item['page_callback'] == 'image_style_deliver') {
+    return;
+  }
+
+  // Looks up the correct path and changes the effective path.
+  // Alter to leave ajax paths untouched
+  if ( strpos($path, 'ajax') === FALSE
+    && strpos($path, 'flag') === FALSE
+    && strpos($path, 'file') === FALSE
+    && strpos($path, 'system') === FALSE
+    && strpos($path, 'supportgroups') === FALSE ) {
+    if ($subdomain = supportgroups_subdomain_subdomain()) {
+      if ($newpath = supportgroups_subdomain_get_path($subdomain)) {
+        $path = $newpath;
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_url_outbound_alter().
+ */
+
+function supportgroups_subdomain_url_outbound_alter(&$path, &$options, $original_path) {
+  $data = _supportgroups_subdomain_get_cache();
+  $data_path_updated = FALSE;
+
+  // Path has been cached.
+  if (isset($data['paths'][$path])) {
+    // A subdomain exists for the path.
+    if ($data['paths'][$path] !== FALSE) {
+      $path = supportgroups_subdomain_get_url($data['paths'][$path]);
+      $options['external'] = TRUE;
+      return;
+    }
+  }
+  // Path has not been cached.
+  else {
+    // PATCH --- RE #1065 we only want to touch node paths
+    //TODO modify logic to automatically handle subdomain paths at the theme level and/or add some other logic so we're not storing these
+    // subdomain caching for anything other than group node landing page URLs
+    if (strpos($path, 'node/') !== FALSE) {
+      // check if the path is an absolute url
+      if(strpos($path, SG_HTTP_PROTOCOL) !== FALSE && strpos($path, '.supportgroups.com') !== FALSE) {
+        $subdomain = str_replace('.supportgroups.com', '', str_replace(SG_HTTP_PROTOCOL, '', $path));
+        $path = supportgroups_subdomain_get_by_subdomain($subdomain);
+
+        $data['subdomains'][$subdomain] = $path;
+        $data['paths'][$path] = $subdomain;
+        $path = supportgroups_subdomain_get_url($data['paths'][$path]);
+        $options['external'] = TRUE;
+        $data_path_updated = TRUE;
+
+      }
+      elseif ($subdomain = supportgroups_subdomain_get_by_path($path)) { // But an entry exists.
+        $data['subdomains'][$subdomain] = $path;
+        $data['paths'][$path] = $subdomain;
+        $path = supportgroups_subdomain_get_url($data['paths'][$path]);
+        $options['external'] = TRUE;
+        $data_path_updated = TRUE;
+      }
+      // or an entry does not exist.
+      else {
+        $data['paths'][$path] = NULL;
+      }
+      if ($data_path_updated) {
+        _supportgroups_subdomain_set_cache($data);
+        return;
+      }
+    }
+  }
+
+  // If URL has not been changed, check whether we are on a subdomain which
+  // should be stripped from links.
+  static $real_base_url = '';
+  if (($real_base_url != '' || $subdomain = supportgroups_subdomain_subdomain()) && empty($options['external']) && empty($options['absolute'])) {
+    if ($real_base_url == '') {
+      global $base_url;
+      $real_base_url = str_replace($subdomain . '.', '', $base_url);
+    }
+    if ($path == '<front>') {
+      $path = '';
+    }
+
+    // need an outbound override to allow ajax urls to remain untouched
+    if(strpos($path, 'ajax') === FALSE
+      && strpos($path, 'flag') === FALSE
+      && strpos($path, 'file') === FALSE
+      && strpos($path, 'system') === FALSE
+      && strpos($path, 'supportgroups') === FALSE  ) {
+      $path = $real_base_url . '/' . drupal_get_path_alias($path);
+    }
+
+    $options['external'] = TRUE;
+  }
+
+}
+
+
+/**
+ * Implements hook_entity_update().
+ */
+function supportgroups_subdomain_entity_update($entity, $type) {
+  _supportgroups_subdomain_change_action($entity, $type, 'update');
+}
+
+/**
+ * Implements hook_entity_delete().
+ */
+function supportgroups_subdomain_entity_delete($entity, $type) {
+  _supportgroups_subdomain_change_action($entity, $type, 'delete');
+}
+
+/**
+ * Implements hook_entity_insert().
+ */
+function supportgroups_subdomain_entity_insert($entity, $type) {
+  _supportgroups_subdomain_change_action($entity, $type, 'insert');
+}
+
+/**
+ * Get the current subdomain.
+ *
+ * @return string
+ *   The current subdomain.
+ */
+function supportgroups_subdomain_subdomain() {
+  global $base_url, $cookie_domain;
+//  if ($_SERVER['HTTP_HOST'] != ltrim($cookie_domain, '.') && $_SERVER['HTTP_HOST'] != 'www' . $cookie_domain) {
+//    return str_replace($cookie_domain, '', $_SERVER['HTTP_HOST']);
+//  }
+  if ($_SERVER['HTTP_HOST'] != ltrim($cookie_domain, '.') && $_SERVER['HTTP_HOST'] != 'www' . $cookie_domain) {
+    // add check for www and return different subdomain
+      switch (variable_get('supportgroups_environment', 'dev')) {
+        case 'live':
+          return str_replace($cookie_domain, '', $_SERVER['HTTP_HOST']);
+          break;
+        case 'dev':
+          // In order for the subdomains to work on dev we strip off 'test-' but we also strip off 'test'
+          // for the sake of the rest of the site pages
+          return str_replace(array($cookie_domain, 'test-', 'test'), '', $_SERVER['HTTP_HOST']);
+          break;
+      }
+
+    // for non live site environs
+    return str_replace('.' . str_replace(SG_HTTP_PROTOCOL, '', $base_url), '', $_SERVER['HTTP_HOST']);
+  }
+  return '';
+}
+
+/**
+ * Get the real path based on a subdomain (cached).
+ *
+ * @param string $subdomain
+ *   The subdomain.
+ *
+ * @return string
+ *   The path.
+ */
+function supportgroups_subdomain_get_path($subdomain) {
+  $data = _supportgroups_subdomain_get_cache();
+  if (!empty($data['subdomains'][$subdomain])) {
+    return $data['subdomains'][$subdomain];
+  }
+  if ($path = supportgroups_subdomain_get_by_subdomain($subdomain)) {
+    $data['subdomains'][$subdomain] = $path;
+    $data['paths'][$path] = $subdomain;
+    _supportgroups_subdomain_set_cache($data);
+    return $path;
+  }
+}
+
+/**
+ * Perform actions when entities are inserted, updated or deleted.
+ *
+ * @param object $entity
+ *   The entity object.
+ * @param string $type
+ *   The entity type.
+ * @param string $action
+ *   The performed action.
+ */
+function _supportgroups_subdomain_change_action($entity, $type, $action) {
+  $uri = entity_uri($type, $entity);
+  // Removing items from cache.
+  $data = _supportgroups_subdomain_get_cache();
+  //PATCHED - to avoid issue with array_search PHP warning if 'subdomains' isn't set
+  if (is_array($data) && is_array($data['subdomains'])) {
+    $subdomain = array_search($uri['path'], $data['subdomains']);
+    unset($data['subdomains'][$subdomain]);
+    unset($data['paths'][$uri['path']]);
+    _supportgroups_subdomain_set_cache($data);
+  }
+
+  // Updating database with info from any subdomain fields.
+  $fields_info = _field_info_collate_fields();
+  foreach ($fields_info['fields'] as $field) {
+    if ($field['type'] == 'subdomain') {
+      if (property_exists($entity, $field['field_name'])) {
+        $wrapper = entity_metadata_wrapper($type, $entity);
+        $subdomain_value = $wrapper->$field['field_name']->value();
+        switch ($action) {
+          case 'update':
+            $query = db_merge('subdomain_field_path')
+              ->fields(array('subdomain' => $subdomain_value))
+              ->key(array('path' => $uri['path']))
+              ->execute();
+            break;
+
+          case 'insert':
+            $query = db_insert('subdomain_field_path')
+              ->fields(array('subdomain' => $subdomain_value, 'path' => $uri['path']))
+              ->execute();
+            break;
+
+          case 'delete':
+            $query = db_delete('subdomain_field_path')
+              ->condition('path', $uri['path'])
+              ->execute();
+            break;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Get the cached data or create new structure if empty.
+ * @return array
+ *   Cached data.
+ */
+function _supportgroups_subdomain_get_cache($reset = FALSE) {
+  static $_cache;
+  if (!$reset && isset($_cache)) {
+    return $_cache;
+  }
+
+  if ($cache = cache_get('supportgroups_subdomain_mapping')) {
+    $data = $cache->data;
+  }
+  else {
+    $data = array('subdomains' => array(), 'paths' => array());
+  }
+  $_cache = $data;
+  return $data;
+}
+
+/**
+ * Save data to cache.
+ * //NOTE: PATCHED
+ * added static cache and hook_exit callback to save to cache once per page load
+ * Note: this is not a thread-safe or atomic operation, because there is a race condition
+ * e.g. user X and Y load different pages that have un-cached items on them. only the last user's
+ * cached items will get saved. This is a worthwhile trade-off though to cut down on what can occasionally
+ * be a costly cache save (serialize) for a potentially large number of URLs
+ * //END PATCH NOTE
+ *
+ * @param array $data
+ *   The data to save.
+ */
+function _supportgroups_subdomain_set_cache($data = NULL) {
+  static $cache_data = NULL;
+  static $save_cache = FALSE;
+
+  // if data is passed in
+  if (!is_null($data)) {
+    //set a flag so we know to save on page exit
+    $save_cache = TRUE;
+    // save data to static cache variable
+    $cache_data = $data;
+  }
+  else if ($save_cache) {
+    // if this is called without data but there is data to be saved, write to cache
+    cache_set('supportgroups_subdomain_mapping', $data, 'cache', CACHE_TEMPORARY);
+  }
+}
+
+/**
+ * Implementation of hook_exit
+ * // works with patch for _supportgroups_subdomain_set_cache to trigger a single cache save during page load
+ *
+ * @param String $destination
+ */
+function supportgroups_subdomain_exit($destination = NULL) {
+  // trigger final cache save for any new items on the page
+  _supportgroups_subdomain_set_cache();
+}
+
+/**
+ * Look up a subdomain name based on path.
+ *
+ * @param string $path
+ *   The system path.
+ *
+ * @return string
+ *   The subdomain.
+ */
+function supportgroups_subdomain_get_by_path($path) {
+  $result = db_select('subdomain_field_path')
+    ->condition('path', $path)
+    ->fields('subdomain_field_path', array('subdomain'))
+    ->execute()
+    ->fetchAssoc();
+  return $result ? $result['subdomain'] : NULL;
+}
+
+/**
+ * Look up a path on subdomain name.
+ *
+ * @param string $subdomain
+ *   The subdomain.
+ *
+ * @return string
+ *   The system path.
+ */
+function supportgroups_subdomain_get_by_subdomain($subdomain) {
+  $result = db_select('subdomain_field_path')
+    ->condition('subdomain', $subdomain)
+    ->fields('subdomain_field_path', array('path'))
+    ->execute()
+    ->fetchAssoc();
+  return $result ? $result['path'] : NULL;
+}

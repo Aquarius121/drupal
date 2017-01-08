@@ -1,0 +1,4 @@
+name = Top User Points Block
+description = This module will create a block for the top userpoints
+core = 7.x 
+package = Custom Code

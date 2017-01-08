@@ -1,0 +1,124 @@
+/* supportgroups-node-group-post related css */
+
+/* Hide group titles in discussions when on the group pages*/
+body.node-type-set-up-group span.in-group { display: none; }
+
+/* hide extraneous image upload areas */
+/*#edit-field-inline-image, #edit-field-discussion-image {display:none;}
+*/
+/* remove image description */
+.form-item-field-discussion-image-und-0 label{
+  display:none;
+}
+.field-name-field-discussion-image .error{
+  display:none;
+}
+.field-name-field-discussion-image {
+  height: 0px;
+}
+.field-name-field-discussion-image .description,
+.field-name-field-discussion-image .file,
+.field-name-field-discussion-image .file-size {
+  display:none;
+}
+.field-name-field-discussion-image .form-file{
+  opacity: 0;
+}
+.form-submit[value=Upload]{
+  opacity: 0;
+}
+/* Hide the discussion label */
+.group-post-node-form .field-name-field-discussion label {
+	display: none; }
+
+/* style form wrapper white rounded */
+.group-post-node-form {
+	background:white;
+	padding:1.0em 1.0em 0px 1.0em;
+	margin-bottom:0.5em;
+	border-top: 1px solid #dddddd;
+	border-right: 3px solid #dddddd;
+	border-bottom: 3px solid #dddddd;
+	border-left: 1px solid #dddddd;
+	border-radius:10px; }
+	/* style text entry field */
+	.group-post-node-form .field-name-field-discussion {
+		background:#fafafa;
+		margin-bottom:7px;
+		border:2px solid #d7d7d7;
+		border-radius:7px; }
+			.group-post-node-form textarea.form-textarea {
+				border:none;
+				resize:vertical;
+				padding-left:60px;
+				font-family: 'Open Sans', sans-serif;
+}
+				.grippie {display:none; }
+.group-post-node-form.open {
+  padding-bottom: 110px;
+}
+body.mobile .group-post-node-form.open {
+  padding-bottom: 145px;
+}
+
+/* post functions container */
+.post-functions {
+	/* Find form submission buttons */
+	display:none;
+	float:right; }
+
+/* style group selection dropdown */
+
+/* group selection dropdown */
+.groups-selection select {
+	border:1px solid #ccc; }
+
+	.groups-selection {
+		display: none;
+		float:left;
+		margin-right:2.0em;
+		color:#999999; }
+		.group-dropdown {
+			text-align:right;
+			padding-top:6px;
+			font-size:1.2em;
+			color:#999999; }
+			.group-dropdown-:hover {
+				cursor:pointer;}
+
+			/* hide group list until click and style it */
+			.edit-og-group-selector {
+				font-family: 'Open Sans', sans-serif;
+				height:150px; width:160px;
+				box-shadow: 2px 2px 3px #cccccc;
+				border: 1px solid #cccccc; }
+			/* override for mobile browsers */
+			body.mobile .edit-og-group-selector {
+			  height: auto; width: auto;
+			}
+
+
+	/* Style and position image upload camera */
+	.group-post-image-button {
+		float:left;
+		width: 30px;
+		height: 30px;
+		margin-right:1.0em;
+		background: url(/sites/all/modules/custom/supportgroups_node/images/camera.png) no-repeat center center; }
+	/*  style and position save button */
+	.group-post-node-form .form-actions {
+		float:left;
+		margin:0;
+		padding:0; }
+		.group-post-node-form #edit-actions input {
+			margin:0;}
+			body.mobile .group-post-node-form .form-actions input {
+  			margin:0; float: left;}
+	body.mobile .group-post-node-form .form-actions .message {
+	  margin-left: 5px;
+	  font-size: .75em;
+	  float: left;
+	}
+
+/* reduce height of this div because it interferes with the post below */
+div.image-widget-data {height:1px; }

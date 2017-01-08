@@ -1,0 +1,218 @@
+/* PRIVATE MESSAGES MODULE */
+
+/* private messages page, individual message thread pages */
+#threadlist .time, #threadlist .member, #threadlist .teaser,
+#messagelist .time, #messagelist .member, .conversation, .author {
+	display:block;
+	margin-left:60px; }
+	.conversation, .member {font-weight:bold; }
+	.author {font-style:italic; }
+	#threadlist .time {color:#999999; }
+
+/* INDIVIDUAL MESSAGE PAGE - list of threads in a pm exchange */
+
+/* link to All Messages */
+.block-user.ind .orangebutton {
+	display:inline-block;
+	padding:0.5em 1.0em; }
+
+#messagelist {
+	font-size:1.3em; }
+
+#messagelist ul {
+	padding:0; }
+	#messagelist ul li {
+		clear:left;
+		list-style:none;
+		padding:1.0em;
+		margin-top:0.7em;
+		background:white;
+		-moz-box-shadow: -1px 2px 4px #cccccc;
+		-webkit-box-shadow: -1px 2px 4px #cccccc;
+		box-shadow: -1px 2px 4px #cccccc;
+		border: 1px solid #dddddd;
+		border-radius:7px;
+		-moz-border-radius:7px; }
+	#messagelist .teaser {
+		display:block;
+		clear:left;
+		padding-top:0.5em; }
+
+/* create and submit message on INDIVIDUAL MESSAGE pages */
+textarea#messagebody {
+	font-family: 'Open Sans', sans-serif;
+	font-size:1.3em; 
+	border-radius:7px;
+	border-width:2px;
+	width:97%;
+	padding:0.5em;
+	height:5.0em; }
+
+/* 'Are you sure' popup on INDIVIDUAL MESSAGE PAGE */
+#messagelist .blockcontainer {
+	font-size:100%;
+	left:80px;
+	top:240px;
+	width:35%; }
+
+/* block user button on INDIVIDUAL MESSAGE PAGE */
+
+
+/* PRIVATEMESSAGES PAGE - list of messsages */
+#threadlist ul {
+	font-size:1.3em;
+	list-style:none;
+	padding:0;
+	margin-top:0.5em;
+	background:white;
+	-moz-box-shadow: -1px 3px 5px #ccc;
+	-webkit-box-shadow: -1px 3px 5px #ccc;
+	box-shadow: -1px 3px 5px #cccccc;
+	border: 1px solid #dddddd;
+	border-radius:7px;
+	-moz-border-radius:7px; }
+	#threadlist ul li {
+		clear:left;
+		position:relative;
+		padding:0.8em;
+		border-bottom:1px dotted #cccccc;
+		min-height:50px;
+		height:auto !important;
+		height:50px; }
+		#threadlist li:hover {background:#f0f0e8; }
+	#threadlist ul a {color:#333333; }
+	#threadlist img, #messagelist img {
+		float:left;
+		width:50px;
+		height:50px; }
+
+/* PRIVATEMESSAGES PAGE - new message form at top */
+  /* + New Message button */
+#threadlist .greenbutton {
+	margin-bottom:5px;
+	display:inline-block;
+	padding: 8px 1em 9px 1em;}
+
+  /* form for entering addressee and message */
+#privatemessage-form{
+	display: none;}
+	#privatemessage-form .form-item {
+		margin-bottom:0.5em; }
+
+  /* style input field for recipient name */
+input[type="text"] {
+	border-radius:6px;
+	background:#fafafa;
+	box-shadow:1px 2px 5px #999999; }
+
+/* message text entry form */
+.form-item-sendmessage {
+	background:white; 
+	margin-bottom:1.0em;
+	padding:0.7em;
+	border-radius:10px;
+	border-top:1px solid #dddddd;
+	border-right:3px solid #dddddd;
+	border-bottom:3px solid #dddddd;
+	border-left:1px solid #dddddd; }
+	.form-item-sendmessage .resizable-textarea {
+		background-color:#fafafa; }
+		textarea#edit-sendmessage {
+			font-size:1.3em;
+			font-family: 'Open Sans', sans-serif;
+			border:2px solid #d7d7d7;
+			border-radius:7px;
+			padding-left:60px;
+			resize:vertical; }
+
+			.grippie {display:none; }
+
+input#edit-recipient {
+	background:url(../images/to.png) no-repeat 5px 6px white;
+	font-size:1.3em;
+	padding-left:25px; }
+
+
+/* hide thread options */
+.threadoptions {
+	display: none;
+	float:right;
+	font-size:1.3em;
+	font-weight:bold;
+	font-family: Helvetica, sans-serif;
+	letter-spacing:0.4em;
+	color:#cccccc; }
+
+	/* remove styling from B */
+	ul#threadpage .blockuserbutton.orangebutton {
+		background:none;
+		border:none;
+		box-shadow:none;
+		text-shadow:none;
+		color:#cccccc; }
+		ul#threadpage .blockuserbutton.orangebutton:hover {
+			color:#239948;
+			background:none;
+			box-shadow:none; }
+	.deletethreadbutton:hover, .markthread:hover {
+		color:#239948;
+		cursor:pointer; }
+
+/* style delete and block user 'Are you sure' popup confirmation */
+.deletecontainer,
+.blockcontainer {
+	z-index:3000;
+	display: none;
+	text-align: center;
+	font-weight:normal;
+	letter-spacing:normal;
+	font-size:70%;
+	color:#444444;
+	position: absolute;
+	width:50%; 
+	left: 70px;
+	top:1.0em;
+	padding:0.5em 0.5em 1.0em 0.5em;
+	border:1px solid #cccccc;
+	border-radius:7px;
+	background-color:#dddddd;	
+	/* IE10 */ 
+	background-image: -ms-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Mozilla Firefox */ 
+	background-image: -moz-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Opera */ 
+	background-image: -o-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Webkit (Safari/Chrome 10) */ 
+	background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0, #ffffff), color-stop(1, #dddddd));
+	/* Webkit (Chrome 11+) */ 
+	background-image: -webkit-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Proposed W3C Markup */ 
+	background-image: linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* IE6-9 */ 
+	filter:  progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#dddddd'); }
+	.deletecontainer p,
+	.blockcontainer p {
+		margin-bottom:1.0em;}
+	.deletethread,
+	.canceldelete,
+	.cancelblock {
+		font-weight:bold;
+		width:auto;
+		height:auto;
+		padding:0.4em 1.0em;
+		cursor:pointer; }
+.blockuser {
+	padding:0.4em 1.0em;
+	font-weight:bold; }
+
+
+/* 'user has been blocked' message */
+#privatemessage-response {
+	text-align:right;
+	color:#239948;
+	font-size:1.2em;
+	font-style:italic;
+	padding-bottom:1.0em; }
+
+
+

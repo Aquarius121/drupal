@@ -1,0 +1,13 @@
+name = Support Group Profile Changes NEW
+description = This module will make changes to the profile page, especially the edit pages
+core = 7.x
+
+package = Support Groups Features
+#dependencies[] = notifications
+#dependencies[] = notifications_autosubscribe
+#dependencies[] = notifications_content
+#dependencies[] = messaging
+dependencies[] = pm_email_notify
+dependencies[] = context
+dependencies[] = user_relationship_mailer
+dependencies[] = mailchimp_lists

@@ -1,0 +1,65 @@
+<?php
+//$Id$
+/**
+ * @file
+ *
+ * Override hook alters at the end of the implementation (ie when weight is 99999)
+ */
+
+/**
+ * Implementation of hook_menu_alter
+ * @param Array $items
+ */
+function supportgroups_hook_menu_alter(&$items) {
+  // Override me module overrides for relationship links
+  $links = user_relationships_ui_menu();
+  foreach ($links as $path => $link) {
+    $items[$path] = $link;
+    $items[$path]['file path'] = drupal_get_path('module', 'user_relationships_ui');
+  }
+}
+
+/**
+ * Implements hook_form_form_id_alter().
+ */
+function supportgroups_hook_form_user_register_form_alter(&$form, $form_state) {
+  // override terms of use weight
+  $form['terms_of_use']['#weight'] = 9;
+  $form['terms_of_use']['terms_of_use']['#title'] = t('I agree with the !legal and I have read the !privacy',
+    array(
+      '!legal' => l('Legal Statement', 'node/18721', array(
+        'attributes' => array(
+          'target' => '_blank'
+        )
+      )) . '<br />',
+      '!privacy' => l('Privacy Statement', 'node/18722', array(
+        'attributes' => array(
+          'target' => '_blank'
+        )
+      ))
+    ));
+}
+
+/**
+ * Implements hook_mail_alter().
+ *
+ * If you need to test mail on test environment, enable this and remove the devel default setting in settings.php
+ */
+function supportgroups_hook_mail_alter(&$message) {
+  if (isset($_SERVER['PANTHEON_ENVIRONMENT']) && ($_SERVER['PANTHEON_ENVIRONMENT'] == 'test' ||
+      $_SERVER['PANTHEON_ENVIRONMENT'] == 'dev')) {
+    watchdog('supportgroups', 'message <pre>'. print_r($message,1));
+    if ($message['to'] == 'kent@passingphase.co.nz'
+      || $message['to'] == 'mary@iadvantage.com'
+      || $message['to'] == 'cortneykluger@gmail.com') {
+      // allow
+      watchdog('supportgroups', 'Allow email');
+    }
+    else {
+      watchdog('supportgroups', 'Disallow email ' . $message['to']);
+      $message['to'] = 'kent@passingphase.co.nz';
+      $message['send'] = FALSE;
+    }
+
+  }
+}

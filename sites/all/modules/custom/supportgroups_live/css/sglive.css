@@ -1,0 +1,20 @@
+/* SG LIVE module */
+
+#sglive img {
+	float:left; }
+#sglive ul {
+	list-style:none; }	
+	#sglive li {
+		position:relative;
+		clear:left;
+		height:35px;
+		margin-bottom:0.5em; }
+		.livenametitle {
+			top: 50%;
+			position: absolute;
+			height: 30%;
+			margin: -10px 0 0 45px; }
+
+#sglive a {
+	color:#333333; }
+	.liveuser {font-weight:bold; }

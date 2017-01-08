@@ -1,0 +1,22 @@
+<?php
+//$Id$
+/**
+ * @file
+ *
+ * Provides 'supportgroups_me' aliases install and uninstall routines.
+ */
+
+
+/**
+ * In order to overwrite me.module we have to weigh heavier than 9999
+ *
+ * Implements hook_install().
+ */
+function supportgroups_me_install() {
+  db_update('system')
+  ->fields(array(
+    'weight' => 99999,
+  ))
+  ->condition('name', 'supportgroups_me')
+  ->execute();
+}

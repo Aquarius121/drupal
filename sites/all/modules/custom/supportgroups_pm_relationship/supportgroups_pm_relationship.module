@@ -1,0 +1,252 @@
+<?php
+/**
+ * Supportgroups PM Relationship module
+ * This module will create the
+ */
+
+// private message rtid
+define('SUPPORTGROUPS_PM_RELATIONSHIP_RTID', 2);
+define('SUPPORTGROUPS_PM_RELATIONSHIP_PRIVATEMSG_NAME', 'Private Message');
+
+
+/**
+ * Implementation of hook_user_relationships_insert
+ * @param $relationship Object Contains the relationship information
+ */
+function supportgroups_pm_relationship_user_relationships_save($relationship, $action) {
+  //TODO - check to see if there's a function that can create the user relationship
+  if ($relationship->rtid == 1) {
+    // duplicate the existing relationship
+    // we need a clone since this is passed by reference
+    $private_message_relationship = _supportgroups_pm_relationship_prepare_relationship_for_save(clone $relationship) ;
+
+    // force the auto creation of the private message relationship
+    // this is a recursive execution of this function as we are already in the hook_user_relationship_save of the supporting (rtid == 1) relationship
+    // this is why we check the rtid above to ensure we only run this when trying to
+    user_relationships_save_relationship($private_message_relationship, $action);
+  }
+}
+
+/**
+ * Helper function to scrub existing supporting relationship in preparation for adding relationship
+ * @param object $relationship
+ */
+function _supportgroups_pm_relationship_prepare_relationship_for_save($relationship) {
+  // override the relationship id
+  $relationship->rtid = SUPPORTGROUPS_PM_RELATIONSHIP_RTID;
+
+  // remove the rid, so we setup for a new relationship
+  unset($relationship->rid);
+
+  // based on the new relationship, override the type
+  $relationship->type = user_relationships_type_load($private_message_relationship->rtid);
+
+  // reverse the users on the relationship
+  $relationship = _supportgroups_pm_relationship_reverse_relationship_roles($relationship);
+
+
+  return $relationship;
+}
+
+/**
+ * Helper function to swap the user roles
+ * @param object $relationship
+ * @return object
+ */
+function _supportgroups_pm_relationship_reverse_relationship_roles($relationship) {
+
+  // reverse the relationship direction by swapping the requester and requestee
+  $requester = $relationship->requester;
+  $requestee = $relationship->requestee;
+
+  $relationship->requester = $requestee;
+  $relationship->requestee = $requester;
+
+  // make sure to set the ids for drupal_write_record
+  $relationship->requester_id = $requestee->uid;
+  $relationship->requestee_id = $requester->uid;
+
+  return $relationship;
+}
+
+/**
+ * Implementation of hook_user_relationships_delete
+ * @param $relationship Object Contains the relationship information
+ */
+function supportgroups_pm_relationship_user_relationships_delete($relationship, $action) {
+
+  // hook_user_relationship_delete doesn't allow us to force the sort in which the relationships are deleted
+  // we are getting lucky with the way the role swapping is returning the relationship to be deleted.
+  // so we have an override here to ensure that the private message relationship is removed
+  if ($relationship->rtid == 1) {
+    // scrub the relationship before sending to delete
+    $delete_relationship = _supportgroups_pm_relationship_prepare_relationship_for_delete($relationship);
+
+    // delete the private message (rtid == 2) relationship
+    if($delete_relationship) {
+      user_relationships_delete_relationship($delete_relationship);
+    }
+  }
+}
+
+/**
+ * Helper function to scrub existing supporting relationship in preparation for deleting relationship
+ * @param object $relationship
+ */
+function _supportgroups_pm_relationship_prepare_relationship_for_delete($passed_relationship) {
+  // override the relationship id
+  $relationships = user_relationships_load(array("between" => array($passed_relationship->requester_id, $passed_relationship->requestee_id), 'rtid' => SUPPORTGROUPS_PM_RELATIONSHIP_RTID));
+
+  foreach($relationships as $rid => $relationship) {
+    if($relationship->rtid == SUPPORTGROUPS_PM_RELATIONSHIP_RTID) {
+      return $relationship;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+ * Check if the user has the supportgroups_pm_relationship for privatemsg requirements
+ * Since this is a reversal of the supporter (see #1548), we can simply use
+ * The cache backed list of users provided form _supportgroups_feed_get_supported_users
+ * We are skipping the user_relationship_load functions entirely
+ * @param integer $currenly_viewing_uid
+ * @return boolean
+ */
+function _supportgroups_pm_relationship_can_user_message($logged_in_uid, $message_recipient_uid) {
+    // Variable to see if the recipient is a moderator
+    $is_moderator = FALSE;
+   if($message_recipient_uid) {
+     // get the list of supporting users for the user you are trying to message
+    $currently_viewed_list_of_supported_users = _supportgroups_feed_get_supported_users($message_recipient_uid);
+    // Check to see if the user you are trying to message is supporting you
+    $is_supported_status = in_array($logged_in_uid, $currently_viewed_list_of_supported_users);
+
+     // get the list of supporting users for the current user
+    $list_of_supported_users_from_current_user = _supportgroups_feed_get_supported_users($logged_in_uid);
+    // Check to see if you are supporting this user
+    $is_supporting_status = in_array($message_recipient_uid, $list_of_supported_users_from_current_user);
+
+    $list_of_moderators = _supportgroups_pm_relationship_fetch_moderator_uids();
+
+    // Check to see if the recipient is a moderator
+    $recipient_is_moderator = in_array($message_recipient_uid,  $list_of_moderators);
+    // Check to see if the logged in user is a moderator
+    $logged_in_user_is_moderator = in_array($logged_in_uid,  $list_of_moderators);
+    
+    // if there is a two way relationship, then return true
+    if (($is_supported_status && $is_supporting_status) || $recipient_is_moderator || $logged_in_user_is_moderator) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * This is a helper function to return the uids that are supportgroup admin and moderator
+ * users
+ *
+ */
+function _supportgroups_pm_relationship_fetch_moderator_uids() {
+  // Since this list could be called multiple times on one page load, 
+  // we just need to produce the list once
+  static $user_array = array();
+  if ($user_array) {
+    return $user_array;
+  }
+  
+  // Fetch the csv user list who are able to private message all users
+  $fetch_user_list = variable_get('supportgroups_pm_relationship_admin_user_list', '');
+
+  // Store user list into a temporary array
+  $separate_user_list = explode(",", $fetch_user_list);
+  
+  foreach ($separate_user_list as $user_uid) {
+    // Strip blank spaces at the front and end of the uid
+    $temp_uid = trim($user_uid);
+    // Make sure uid is not blank or 0
+    if ($temp_uid) {
+      // Store uid into user array
+      $user_array[] = $user_uid;
+    }
+  }
+  return $user_array;
+}
+
+/**
+ * This function will loop through an array of user uids.
+ * We can call _supportgroups_pm_relationship_can_user_message 
+ * to check each uid
+ * @param array $recipient_array An array of uids
+ * @return boolean
+ */
+function _supportgroups_pm_relationship_check_message_for_user_list($recipient_array) {
+  global $user;
+  // Loop through each item and check to see if this user
+  // can message all of the recipients
+  foreach ($recipient_array as $user_id) {
+    // Make sure the user id is not blank
+    if ($user_id) {
+      // Check to see if this user can message this recipient. If false, then 
+      // throw an error message
+      if (!_supportgroups_pm_relationship_can_user_message($user->uid, $user_id)) {
+        // user cannot pm to these recipients
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Implementation of hook_mail_alter
+ * @param $message Array that contains notification information
+ */
+function supportgroups_pm_relationship_mail_alter(&$message) {
+  if (isset($message['params']['@relationship_name'])
+    && $message['params']['@relationship_name'] == SUPPORTGROUPS_PM_RELATIONSHIP_PRIVATEMSG_NAME) {
+    $message['send'] = FALSE;
+  }
+}
+
+/**
+ * Implementation of hook_permission
+ *  This function will create the permissions to private message any user
+ */
+function supportgroups_pm_relationship_permission(){
+  // Return the name of the permission
+  // Users should be able to access all of the pages.
+  // The all message page is the only page that has restrictions
+  return array(
+    'access supportgroups_pm_relationship admin page' => array(
+      'title' => t('All access to all private messages')
+    )
+  );
+}
+
+ 
+/**
+ * Implementation of hook_menu
+ *
+ * @return multitype:multitype:boolean string unknown  multitype:boolean string multitype:number  unknown  multitype:boolean string
+ */
+function supportgroups_pm_relationship_menu() {
+  $items = array();
+
+  // This page will contain a list of uids that can bypass the private message restrictions
+  $items['admin/supportgroups/privatemessage'] = array(
+      'title' => 'Private Message Settings',
+      'description' => 'Configure settings for private messages.',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('supportgroups_pm_relationship_admin_form'),
+      'access arguments' => array('access supportgroups_pm_relationship admin page'),
+      'type' => MENU_NORMAL_ITEM,
+      'file' => 'supportgroups_pm_relationship.admin.inc',
+  );
+  
+  return $items;
+}
+ 
+
+ 

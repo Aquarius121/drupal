@@ -1,0 +1,1943 @@
+<?php
+  define( 'SUPPORTGROUPS_PM_CACHE_TABLE' , 'cache' );
+  define( 'SUPPORTGROUPS_PM_THREAD_CID' , 'supportgroups_pm_threadlist_' );
+  define( 'SUPPORTGROUPS_PM_MESSAGE_CID' , 'supportgroups_pm_messagelist_' );
+  define( 'SUPPORTGROUPS_PM_NOTIFICATION_CID' , 'supportgroups_pm_notification_' );
+  define( 'SUPPORTGROUPS_PM_CACHE_TTL' , '+20 minutes' );
+  define( 'SUPPORTGROUPS_PM_NOTIFICATION_CACHE_TTL' , '+10 minutes' );
+  // DELETE BELOW
+  define( 'SUPPORTGROUPS_PM_NOTIFICATION_COUNT_CID' , 'supportgroups_pm_notification_count_' );
+
+define('SUPPORTGROUPS_PM_RELATIONSHIP_ERROR_MESSAGE',
+"You and this member must support each other before you may private message.
+For more information, see our <a href='/how-this-site-works'>FAQ</a>.");
+
+  /**
+  *  This function will create the path for the new private messaging page.
+  *  We will also need to create a path for an ajax callout
+  */
+  function supportgroups_pm_menu(){
+    $items = array();
+    // This is the all threads page
+    // There is no special permissions for this
+    $items['privatemessages'] = array(
+      'title' => 'Messages',
+      'page callback' => 'supportgroups_pm_mainpage',
+      'access arguments' => array('access new private messages page'),
+    );
+    // This page shows all messages for a specific thread id
+    //  In order to see this page, you must be part of this thread.
+    // Also, you can't be blocked
+    $items['privatemessages/%'] = array(
+      'page callback' => 'supportgroups_pm_messagepage',
+      'page arguments' => array(1),
+      'access callback' => 'supportgroups_pm_messagepage_access',
+      'access arguments' => array(1),
+      // doesn't work
+      //'access callback' => 'privatemsg_view_access',
+      //'access arguments' => array(1),
+    );
+    //This callback will load the messages for a thread
+    $items['ajax/loadmoremessages'] = array(
+      'title' => 'Private Messages',
+      'page callback' => 'supportgroups_pm_ajax_message',
+      'access arguments' => array('access new private messages page')
+    );
+    // THis callback will create new messages on a message list page
+    $items['ajax/createmessages'] = array(
+      'title' => 'Private Messages',
+      'page callback' => 'supportgroups_pm_ajax_post',
+      'page arguments' => array(2,3),
+      'access arguments' => array('access new private messages page')
+    );
+
+    //  This callback will load the threads on the notification block
+    $items['ajax/loadmorenotifications'] = array(
+      'title' => 'Private Messages',
+      'page callback' => 'supportgroups_pm_ajax_notifications',
+      'access arguments' => array('access new private messages page')
+    );
+    // THis callback will send messages on a user profile page
+    $items['ajax/createnewmessages'] = array(
+      'title' => 'Private Messages',
+      'page callback' => 'supportgroups_pm_ajax_new',
+      'page arguments' => array(2,3),
+      'access arguments' => array('access new private messages page')
+    );
+    // Delete all messages in a thread
+    $items['ajax/deletethread/%'] = array(
+      'title' => 'Delete Thread',
+      'page callback' => 'supportgroups_pm_ajax_deletethread',
+      'page arguments' => array(2),
+      'access arguments' => array('access new private messages page')
+    );
+    // BLock a user from the privatemessages page
+    $items['ajax/actionblock/%'] = array(
+      'title' => 'Block user',
+      'page callback' => 'supportgroups_pm_ajax_blockuser',
+      'page arguments' => array(2),
+      'access arguments' => array('access new private messages page')
+
+    );
+    // Mark thread as unread
+    $items['ajax/actionmark/%'] = array(
+      'title' => 'Block user',
+      'page callback' => 'supportgroups_pm_ajax_markthread',
+      'page arguments' => array(2),
+      'access arguments' => array('access new private messages page')
+    );
+    // Get username
+    $items['ajax/pmgetusername'] = array(
+      'title' => 'Username',
+      'page callback' => 'supportgroups_pm_username_autocomplete',
+      'access arguments' => array('access new private messages page')
+    );
+
+    return $items;
+    // Create an $item array and fill in the path info
+  }
+
+
+
+  /**
+  *  This function will check the $thread_id and see if you are allow
+  * to see the thread or if you are not blocked from the thread
+  */
+  function supportgroups_pm_messagepage_access( $thread_id){
+    global $user;
+    $recipient_array = array();
+    $part_of_thread = false;
+    $blocked = '';
+
+
+    // Check to see if you belong in this thread
+    $result = db_query("SELECT thread_id, recipient FROM {pm_index}
+      WHERE thread_id = :thread_id", array( ':thread_id' => $thread_id) );
+    foreach( $result as $row ){
+      // Check to see that you are part of this thread
+      if( $row->recipient == $user->uid){
+        $part_of_thread = true;
+      }
+      else{
+        // check to see if you are blocked
+        $result_block = db_query("SELECT author FROM {pm_block_user}
+          WHERE recipient = :recipient AND author = :uid",
+          array( ':recipient' => $row->recipient, ':uid' => $user->uid ) );
+        foreach( $result_block as $row_block){
+          // If there is a result, then the logged in user is blocked
+          // quick fix to allow the support groups admin to view all blocked messages
+          if ($user->uid != 12021) {
+            $blocked = 'blocked';
+          }
+        }
+        // Store uid in an array
+        $recipient_array[] = $row->recipient;
+      }
+    }
+
+
+    // Check to see if supportgroups_pm_relationship is enabled
+    if( module_exists('supportgroups_pm_relationship') ){
+
+      // check to see if these users can message each other
+      // If false, throw an error message
+      if (!_supportgroups_pm_relationship_check_message_for_user_list($recipient_array)) {
+        return false;
+      }    
+
+    } // end of if supportgroups_pm_relationship exist
+
+    // If you are part of the thread and not blocked, then you can view the page
+    if( $part_of_thread == true && $blocked != 'blocked' ){
+      return true;
+    }
+    else{
+      return false;
+    }
+  }
+
+
+  /**
+  *  This function will create the permissions to view the private message page
+  */
+  function supportgroups_pm_permission(){
+    // Return the name of the permission
+    // Users should be able to access all of the pages.
+    // The all message page is the only page that has restrictions
+    return array(
+      'access new private messages page' => array(
+        'title' => t('Access New Private Messages Page')
+      )
+    );
+  }
+
+  /**
+  *  This function will templates for the private message page
+  */
+  function supportgroups_pm_theme(){
+    return array(
+      // The template for the all thread page
+      'supportgroups_pm_threadlist' => array( 'arguments' => array('thread_list' => NULL),
+                                           'template' => 'templates/supportgroups_pm_threadlist'),
+      // Template for all message from a thread
+      'supportgroups_pm_messagelist' => array( 'arguments' => array('message_list' => NULL,
+                                                                    'blockuser' => NULL,
+                                                                    'thread_id' => NULL),
+                                           'template' => 'templates/supportgroups_pm_messagelist'),
+      // The template for each messages in a thread
+      'supportgroups_pm_message' => array( 'arguments' => array('author' => NULL,
+                                                                'body' => NULL,
+                                                                'timestamp' => NULL,
+                                                                'image' => NULL),
+                                           'template' => 'templates/supportgroups_pm_message'),
+      // The template for each threads
+      'supportgroups_pm_thread' => array( 'arguments' => array('recipients' => NULL,
+                                                               'body' => NULL,
+                                                               'thread_id' => NULL,
+                                                               'is_new' => NULL,
+                                                               'timestamp' => NULL,
+                                                               'delete' => NULL,
+                                                               'block' => NULL,
+                                                               'mark' => NULL,
+                                                               'image' => NULL,
+                                                               'author' => NULL,
+                                                               'base_url' => NULL),
+                                          'template' => 'templates/supportgroups_pm_thread'),
+     // The template for each threads
+      'supportgroups_pm_notification_thread' => array( 'arguments' => array('author' => NULL,
+                                                               'body' => NULL,
+                                                               'thread_id' => NULL,
+                                                               'is_new' => NULL,
+                                                               'timestamp' => NULL,
+                                                               'image' => NULL,
+                                                               'unix_timestamp' => NULL,
+                                                               'base_url' => NULL),
+                                          'template' => 'templates/supportgroups_pm_notification_thread'),
+      'supportgroups_pm_sendmessage' => array( 'arguments' => array('uid' => NULL),
+                                           'template' => 'templates/supportgroups_pm_sendmessage'),
+      'deletethread' => array( 'arguments' => array('thread_id' => NULL),
+                                           'template' => 'templates/deletethread'),
+      'blockuser' => array( 'arguments' => array('uid' => NULL,
+                                                 'block_text' => NULL),
+                                           'template' => 'templates/blockuser'),
+      'markthread' => array( 'arguments' => array('thread_id' => NULL),
+                                           'template' => 'templates/markthread'),
+
+      'supportgroups_pm_notifications' => array( 'arguments' => array('threadlist' => NULL),
+                                          'template' => 'templates/supportgroups_pm_notifications')
+    );
+    // Need to create a template for the entire page output
+    // Need to create a template to theme each thread
+    // Need to create a template to theme each message
+  }
+
+  /**
+  *  Preprocess function for the supportgroups_pm_threadlist
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_threadlist( &$vars ){
+    // add css file
+    drupal_add_js( drupal_get_path('module', 'supportgroups_pm').'/js/threadlist.js' );
+    drupal_add_css(  drupal_get_path('module', 'supportgroups_pm').'/css/message.css' );
+    // create new private message form with username autocomplete
+    $vars['privatemessage_form'] = drupal_get_form('supportgroups_pm_create_form');
+  }
+
+
+  /**
+  *  Preprocess function for the supportgroups_pm_thread
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_thread( &$vars ){
+    // add css file
+    drupal_add_css(  drupal_get_path('module', 'supportgroups_pm').'/css/message.css' );
+  }
+
+
+  /**
+  *  Preprocess function for the supportgroups_pm_messagelist
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_messagelist( &$vars ){
+    // THis file will update the message list every so often
+    drupal_add_js(  drupal_get_path('module', 'supportgroups_pm').'/js/supportgroups_pm.js' );
+    // add css file
+    drupal_add_css(  drupal_get_path('module', 'supportgroups_pm').'/css/message.css' );
+    // Create variable for list of recipients
+
+    $vars['recipients'] = supportgroups_pm_get_recipients($vars['thread_id'] );
+  }
+
+
+  /**
+  *  Preprocess function for the supportgroups_pm_message
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_message( &$vars ){
+    // add css file
+    drupal_add_css(  drupal_get_path('module', 'supportgroups_pm').'/css/message.css' );
+  }
+
+
+
+
+
+  /**
+  *  Preprocess function for the supportgroups_pm_notifications
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_notifications( &$vars ){
+        // Add CSS and JS files
+        drupal_add_css(  drupal_get_path('module', 'supportgroups_pm').'/css/notification.css' );
+        drupal_add_js(  drupal_get_path('module', 'supportgroups_pm').'/js/supportgroups_pm_notifications.js' );
+
+        $settings['supportgroups_pm_notification'] = array(
+          'loadmore' => array(
+            'running' => 0 // set default mark to see if the interval is running
+          ),
+        );
+        drupal_add_js( $settings, 'setting');
+
+        // add link for all messages
+        $vars['see_all'] = l(t('See all messages'), 'privatemessages', array('absolute' => true));
+  }
+
+
+  /**
+  *  Preprocess function for the notification
+  */
+  function supportgroups_pm_preprocess_supportgroups_pm_sendmessage( &$vars ){
+    global $user;
+
+    drupal_add_css(drupal_get_path('module', 'supportgroups_pm').'/css/sendmessage.css');
+    drupal_add_js(drupal_get_path('module', 'supportgroups_pm').'/js/sendmessage.js');
+
+    // add additional logic to block messaging in the UI for authenticated users
+    if(!user_is_anonymous()) {
+      // set the current user profile
+      $currenly_viewing_uid = $vars['uid'];
+
+      // get the list of users that our logged in user supports
+      $authenicated_user_list_of_supported_users = _supportgroups_feed_get_supported_users($user->uid);
+
+      // test if they are supporting the currently viewed user
+      $is_supporting = in_array($currenly_viewing_uid, $authenicated_user_list_of_supported_users);
+
+      // now reverse the lookup and check for the user being viewed
+      // if this user supports our authenticated user, allow them to message
+      if(module_exists('supportgroups_pm_relationship')) {
+        $can_message = _supportgroups_pm_relationship_can_user_message($user->uid, $currenly_viewing_uid);
+      }
+      else {
+        $can_message = FALSE;
+      }
+
+      // and decide if we can message
+
+      // add the state to Drupal.settings.supportgroups_pm_supporting
+      drupal_add_js(array('supportgroups_pm_supporting' => array('is_supporting' => $is_supporting, 'can_message' => $can_message, 'error_message' => SUPPORTGROUPS_PM_RELATIONSHIP_ERROR_MESSAGE)), array('type' => 'setting'));
+    }
+  }
+
+
+ /********************* Private Message Notification Block ***************************/
+
+  /**
+  *  This function is needed to show information about the block
+  */
+  function supportgroups_pm_block_info(){
+    $blocks = array();
+    // This block contains the notifications that show on every page
+    $blocks['pm_notifications'] = array(
+      'info' => 'Private Message Notifications',
+      'cache' => DRUPAL_NO_CACHE,
+    );
+    // This block should only appear on user profile pages. Allows you to send messages
+    //to users
+    $blocks['pm_sendmessage'] = array(
+      'info' => 'Send Private Message Block',
+      'cache' => DRUPAL_NO_CACHE,
+    );
+
+    return $blocks;
+  }
+
+  /**
+  *  This function creates the block view
+  */
+  function supportgroups_pm_block_view( $delta = '' ){
+    $blocks = array();
+    switch( $delta){
+      case 'pm_notifications':
+        // This function returns the block content for the pm notifications
+        $blocks['content'] = supportgroups_pm_block_content();
+        break;
+      case 'pm_sendmessage':
+        // This function returns the block content for the pm notifications
+        $blocks['content'] = supportgroups_pm_send_content();
+        break;
+    }
+    return $blocks;
+  }
+
+  /**
+  *  This function will return the display of the notifications block.
+  */
+  function supportgroups_pm_block_content(){
+    global $user;
+
+    // $thread_list will hold the records from the database
+    $thread_list = array();
+    // We will retrieve the notification list
+    // check to see if there exist a cached copy
+    // if not, then we will have to create the thread list
+    $cid = _supportgroups_pm_notification_get_cid($user->uid);
+    $cached = cache_get($cid , SUPPORTGROUPS_PM_CACHE_TABLE);
+    if( $cached){
+      $thread_list = $cached->data;
+    }
+    else{
+      // $thread_list will pull the data from the database and add all records into an array
+      // false is needed to return a list that does not include the current user
+      $thread_list = supportgroups_pm_thread(false);
+      cache_set($cid, $thread_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_NOTIFICATION_CACHE_TTL) );
+    }
+    // This function will sort the array and theme each individual row
+    $threads = supportgroups_pm_notification_list($thread_list);
+
+	return theme('supportgroups_pm_notifications', array('threadlist' => $threads ));
+  }
+
+  /**
+  *  This function will return the count of new notifications
+  */
+  function _supportgroups_pm_notification_count(){
+    global $user;
+    $notifications = 0;
+    $results = db_query("SELECT count(mid) as count FROM {pm_index}
+      WHERE recipient = :uid AND deleted = 0 AND type = 'user' AND is_new = 1",
+      array( ':uid' => $user->uid ) );
+    foreach( $results as $row){
+      $notifications = $row->count;
+    }
+    return $notifications;
+  }
+
+
+  /**
+  *  This function will return the notification messages
+  */
+  function supportgroups_pm_notification_list($threads){
+    // WRONG WE NEED TO SORT BY latest messaged on
+    // uasort will sort the array by the corect timestamp
+    uasort( $threads, 'supportgroups_pm_thread_sort');
+    // This function will theme each thread
+    $content = supportgroups_pm_notification_theme($threads);
+    return $content;
+  }
+
+
+  /**
+  *  This function will return all threads after they have been theme.
+  *  This is for the notification message list
+  */
+  function supportgroups_pm_notification_theme( $threads ){
+	  global $user;
+    // This function will look through the array and theme each thread
+    $content = '';
+    $counter = 0;
+    foreach( $threads as $row => $value ){
+      // Get the name of the author
+      $author = '';
+      // Get the body of the message
+      $body = '';
+      $is_new = '';
+      $result = db_query("SELECT author, body,timestamp FROM {pm_message}
+        WHERE mid = :mid
+        LIMIT 1", array( ':mid' => $value['mid'] ) );
+      foreach( $result as $row ){
+        $result_is_new = db_query("SELECT is_new FROM {pm_index}
+		  WHERE mid = :mid AND recipient = :uid", array(':mid' => $value['mid'], ':uid' => $user->uid) );
+		foreach( $result_is_new as $row_is_new){
+          if( $row_is_new->is_new == 1 ){
+            $is_new = 'is_new';
+          }
+		}
+         $current_user = user_load($row->author);
+        if( module_exists( 'supportgroups_utility')){
+          $image = supportgroups_utility_profile_image($current_user, '50x50', false);
+        }
+        $author = supportgroups_pm_username($row->author);
+        $body = substr($row->body,0, 30);
+        if( module_exists('supportgroups_utility')){
+          $timestamp = supportgroups_utility_load_date($row->timestamp);
+        }
+        //  unix timestamp
+        $unix_timestamp = $row->timestamp;
+        break;
+      }
+
+      // add base_url for subdomain considerations
+      global $base_url;
+
+      $content .= theme('supportgroups_pm_notification_thread', array(
+        'author' => $author,
+        'body' => $body,
+        'thread_id' => $value['thread_id'],
+        'is_new' => $is_new,
+        'timestamp' => $timestamp,
+        'image' => $image,
+        'unix_timestamp' => $unix_timestamp,
+        'base_url' => $base_url,
+      ));
+
+      $counter++;
+      // Show only 5 items for the private message notfication list
+      if( $counter == 5){
+        break;
+      }
+    }
+    return $content;
+  }
+
+
+  /**
+  *  This function will return the display of the send message block.
+  */
+  function supportgroups_pm_send_content(){
+    // This is for the send message button on the user profile page
+    return theme('supportgroups_pm_sendmessage', array('uid' => arg(1)));
+  }
+
+
+ /********************* End of Private Message Notification Block ********************/
+
+ /********************* Thread List    ********************/
+
+
+
+  /**
+  *  This function will create the page for the main private messaging page. Shows all threads
+  */
+  function supportgroups_pm_mainpage(){
+    global $user;
+    // $thread_list will contain the array for all threads
+    $thread_list = array();
+    // Get the cache version of the private message page
+    // This is unique for each user, so we need to look for the cache version for the current user
+    $cid = _supportgroups_pm_thread_get_cid($user->uid);
+    $cached = cache_get($cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+    // Check to see if the private message page is cached
+    if( $cached ){
+      // return cached array
+      $thread_list = $cached->data;
+    }
+    else{
+      // This function will return all threads
+      $thread_list = supportgroups_pm_thread();
+      cache_set($cid, $thread_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+    }
+    // we will have to sort the array and theme each record
+    $thread_content = supportgroups_pm_thread_list( $thread_list );
+    // then we have to theme the entire output
+    $content = theme('supportgroups_pm_threadlist', array( 'thread_list' => $thread_content ) );
+    return $content;
+  }
+
+
+
+  /**
+  *  This function will return the left part of the page
+  */
+  function supportgroups_pm_thread_list($threads){
+    // First we need to query the database for all of the private messaging
+    // thread that the current users is on.
+    // Then we need to sort each thread by last messaged on
+    uasort( $threads, 'supportgroups_pm_thread_sort');
+    // This function will theme each thread
+    $content = supportgroups_pm_thread_theme($threads);
+    return $content;
+  }
+
+  /**
+  *  This function will return all of the threads that the user is on
+  */
+  function supportgroups_pm_thread($include_current_user = true){
+    // $include_current_user is needed to see if we should return messages
+    // from the logged in user
+    global $user;
+    $thread = array();
+    // So we will have to check all of the threads that the user is on.
+    // We first need to check threads that the user initiated contact with
+    // Then we need to check threads that were not started by the logged in user
+    // Once we get that information, we need to figure out the last message time of each thread
+    // Then we can sort timestamp
+    // We will return an array of the thread
+
+    // This query will return all threads that the user is part of.
+    // we need to make sure the messages are not deleted and they are of type user
+    $results = db_query("SELECT mid, thread_id, recipient, is_new, deleted FROM {pm_index}
+      WHERE recipient = :uid AND deleted = 0 and type = 'user'
+      GROUP BY thread_id
+      ORDER BY mid DESC", array(':uid' => $user->uid) );
+
+
+    // We want to retrieve the latest mid of each thread. We will want to get
+    // the author of the message and information to see if the message is new
+    foreach( $results as $row){
+      $mid = '';
+      $is_new = '';
+
+      // If we aren't including the current user, then we need to find
+      // the most recent message that is not from the logged in user
+      if(  !$include_current_user ){
+      // First get all of the mids in a thread
+      //select * FROM drup_pm_index WHERE recipient = $user->uid AND thread_id = 343984 ORDER BY mid DESC;
+        $result_mids = db_query("SELECT mid,recipient FROM {pm_index}
+          WHERE recipient != :uid AND thread_id = :thread_id AND deleted = 0
+          ORDER BY mid DESC", array( ':uid' => $user->uid, ':thread_id' => $row->thread_id ) );
+        foreach( $result_mids as $row_mids ){
+          // return the mid that the current user is not part of
+          // need to run another command to pull in the author info
+          $result_author = db_query("SELECT author FROM {pm_message}
+            WHERE mid = :mid", array( ':mid' => $row_mids->mid) );
+            // if current user and author is not the same, then return the mid
+          foreach( $result_author as $row_author){
+            if( $user->uid != $row_author->author ){
+              $mid = $row_mids->mid;
+            }
+            break;
+          }
+          // break loop if we have a mid
+          if( $mid != '' ){
+            break;
+          }
+        }
+        // Now we need to find out whether or not this message has not been read yet
+        // First check to see that there is an mid
+        if( $mid != '' ){
+          $results_is_new = db_query("SELECT is_new FROM {pm_index}
+            WHERE recipient != :uid AND deleted = 0 AND mid = :mid", array( ':mid' => $mid, ':uid' => $user->uid ) );
+          foreach( $results_is_new as $row_is_new ){
+            // this will let us know if the message is new/unread
+            $is_new = $row_is_new->is_new;
+            break;
+          }
+        }
+
+      }
+      // Find the most recent message in a thread. It can include the current
+      // user as well
+      else{
+        $results_messages = db_query("SELECT mid, is_new FROM  {pm_index}
+          WHERE recipient = :uid AND deleted = 0 AND thread_id = :tid
+          ORDER BY mid DESC", array( ':uid' => $user->uid, ':tid' => $row->thread_id));
+        foreach( $results_messages as $row_messages ){
+          $mid = $row_messages->mid;
+          $is_new = $row_messages->is_new;
+          break;
+        }
+      }
+
+      //First check to see that mid exist
+      if( $mid != '' ){
+        // get the timestamp of the latest message of a thread
+        $timestamp = '';
+        $result_time = db_query("SELECT timestamp FROM {pm_message}
+          WHERE mid = :mid", array( ':mid' => $mid) );
+        foreach( $result_time as $row_time){
+          $timestamp = $row_time->timestamp;
+        }
+        // $thread will store the tread_id, mid, and is_new
+        $thread[] = array(
+          'thread_id' => $row->thread_id,
+          // we will want to return the highest element from the $mid and $is_new array
+          'mid' => $mid,
+          'is_new' => $is_new,
+          'timestamp' => $timestamp
+        );
+      }
+
+    } // end of foreach loop
+    // return a sorted array
+    return $thread;
+  }
+
+  /**
+  *  This function will compare arrays and sort by timestamp. Required by usort()
+  *
+  */
+  function supportgroups_pm_thread_sort($a, $b){
+    if( $a['timestamp'] == $b['timestamp'] ){
+      return 0;
+    }
+    return ( $a['timestamp'] < $b['timestamp'] ) ? 1 : -1;
+  }
+
+  /**
+  *  This function will return all threads after they have been theme.
+  */
+  function supportgroups_pm_thread_theme( $threads ){
+    global $user;
+    // This function will look through the array and theme each thread
+    $content = '';
+    foreach( $threads as $row => $value ){
+      // Get the name of the author
+      $author = '';
+      // Get the body of the message
+      $body = '';
+      $is_new = '';
+      $result = db_query("SELECT author, body,timestamp FROM {pm_message}
+        WHERE mid = :mid
+        LIMIT 1", array( ':mid' => $value['mid'] ) );
+      foreach( $result as $row ){
+        $blockuser = '';
+        $thread_id = $value['thread_id'];
+
+        // This query will look for the other user from this thread.
+        // We will use the other users uid so we can block them if needed
+        $result_block = db_query("SELECT recipient FROM {pm_index}
+          WHERE deleted = 0 AND thread_id = :thread_id AND recipient != :uid LIMIT 1",
+          array( ':thread_id' => $thread_id, ':uid' => $user->uid ) );
+        foreach( $result_block as $row_block){
+          $blockuser = $row_block->recipient;
+        }
+
+        // if blockuser is empty, then user current user uid
+        if( $blockuser == '' ){
+          $blockuser = $user->uid;
+        }
+
+        // need to retrieve the author name
+        if( $value['is_new'] == 1 ){
+          $is_new = 'is_new';
+        }
+        $usercurrent = user_load($blockuser);
+
+        if( module_exists( 'supportgroups_utility')){
+          $image = supportgroups_utility_profile_image($usercurrent, '50x50', false);
+        }
+        // Author of the message that is showing
+        $author = supportgroups_pm_username($row->author);
+
+        $recipients = supportgroups_pm_get_recipients( $value['thread_id'] );
+
+        $body = substr($row->body,0, 150);
+        if( module_exists('supportgroups_utility')){
+          $timestamp = supportgroups_utility_load_date($row->timestamp);
+        }
+
+        // delete thread
+        $delete = theme( 'deletethread' , array( 'thread_id' => $thread_id) );
+        //Able to block user if someone else has joined the thread
+        if( $blockuser != $user->uid){
+          $block = theme( 'blockuser' , array( 'uid' => $blockuser, 'block_text' => 'B') );
+        }
+
+        $mark = theme( 'markthread' , array( 'thread_id' => $thread_id) );
+        break;
+      }
+
+      // add base_url for subdomain considerations
+      global $base_url;
+
+      $content .= theme('supportgroups_pm_thread', array(
+        'recipients' => $recipients,
+        'body' => $body,
+        'thread_id' => $thread_id,
+        'is_new' => $is_new,
+        'timestamp' => $timestamp,
+        'delete' => $delete,
+        'block' => $block,
+        'mark' => $mark,
+        'image' => $image,
+        'author' => $author,
+        'base_url' => $base_url,
+      ));
+    }
+
+    return $content;
+  }
+
+
+
+  /**
+  *  This function will return all messages from the current thread in an array
+  */
+  function supportgroups_pm_current_thread($thread_id){
+    global $user;
+    // Run a query to pull all messages from a thread
+    // We need to check threads that the current user created and threads
+    // that someone else create but the logged in user is part of.
+    // Then we need to sort all threads by latest messaged on
+    // This is the variable that will hold the thread_id
+    $thread_id = '';
+    // This query will return the most recent message.
+    $result = db_query("SELECT mid,thread_id,recipient,is_new, deleted FROM {pm_index}
+      WHERE recipient = :uid AND deleted = 0 AND type = 'user'
+      ORDER BY mid DESC LIMIT 1", array( ':uid' => $user->uid ) );
+    foreach( $result as $row ){
+      $thread_id = $row->thread_id;
+      break;
+    }
+    return $thread_id;
+  }
+
+ /********************* End Thread List    ********************/
+
+
+ /************************** Message List Page ********************************/
+
+
+ /**
+  *  This function will create the page for all messages in a thread
+  */
+  function supportgroups_pm_messagepage( $thread_id){
+
+    global $user;
+    $message_list = array();
+    // Get the cache version of the  message list
+    // This is unique for each user, so we need to look for the cache version for the current user
+
+    $cid = _supportgroups_pm_message_get_cid($user->uid, $thread_id);
+
+    $cached = cache_get( $cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+    //KEVIN-- don't assume the layout, name these helper functions by their purpose, e.g. message_list, message_view, not left/right
+    // CHANGED
+    // This query is needed to update the is_new field so that you will not be notify that you have
+    // new messages
+    // select * FROM drup_pm_index WHERE thread_id= 343847 AND recipient =108098 ORDER BY mid DESC
+
+
+    // This function returns the messages from a thread
+    // Need to make sure that users are seeing the threads they belong to
+    // add javascript file
+
+    // We will store the value of the thread_id in a varable that can be used in the js file
+    drupal_add_js( array( 'supportgroups_pm' => array( 'messagevalue' => $thread_id ) ), 'setting');
+
+
+    // If you are viewing the message page, then we need to make sure that the messages are
+    // marked as read.
+    db_query("UPDATE {pm_index} SET is_new = 0
+      WHERE thread_id = :thread_id AND recipient = :uid",
+      array( ':thread_id' => $thread_id, ':uid' => $user->uid) );
+
+    // We will have to clear the thread list cache and the notification cache
+    //$cid_count = _supportgroups_pm_notification_count_get_cid( $user->uid);
+    //cache_clear_all($cid_count,SUPPORTGROUPS_PM_CACHE_TABLE);
+
+    // remove thread cache
+    $cid_thread = _supportgroups_pm_thread_get_cid( $user->uid);
+    cache_clear_all( $cid_thread ,SUPPORTGROUPS_PM_CACHE_TABLE);
+
+    // Check to see if the private message page is cached
+    if( $cached ){
+      // return cached page
+      $message_list = $cached->data;
+    }
+    else{
+      // retrieve the array for the all messages in a thread
+      $message_list = supportgroups_pm_all_messages( $thread_id );
+      // set the cache .  Need to use the thread_id and user uid to make the cache unique for each user
+      cache_set($cid , $message_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+    }
+    $message_theme = supportgroups_pm_message_list( $message_list);
+
+    // Get the uid of the user you are messaging with
+    $recipient =  supportgroups_pm_author_helper( $thread_id );
+    $blockuser = theme( 'blockuser' , array( 'uid' => $recipient, 'block_text' => 'Block this member') );
+
+    // theme the message
+    // I need to cache the message list function.  So I need to cache whatever creates $message_list.
+    //  Caching the message page will not be enough
+    $content = theme('supportgroups_pm_messagelist', array( 'message_list' => $message_theme, 'blockuser' => $blockuser, 'thread_id' => $thread_id ) );
+
+    return $content;
+  }
+
+
+  /**
+  * This function will return the uid of the user you are part of a message thread
+  * with.
+  */
+  function supportgroups_pm_author_helper( $thread_id ){
+    global $user;
+    $blockuser = '';
+    // This query will look for the other user from this thread.
+    // We will use the other users uid so we can block them if needed
+    $result_block = db_query("SELECT recipient FROM {pm_index}
+      WHERE deleted = 0 AND thread_id = :thread_id AND recipient != :uid LIMIT 1",
+      array( ':thread_id' => $thread_id, ':uid' => $user->uid ) );
+    foreach( $result_block as $row_block){
+      $blockuser = $row_block->recipient;
+    }
+    return $blockuser;
+  }
+
+
+  /**
+  *  This function will return all messages in a thread
+  */
+  function supportgroups_pm_message_list($messages){
+    global $user;
+    $content = '';
+    // This will show the messages in the thread.
+    // By default, we will show the messages from to top thread of the
+    // left side of the page
+    // Procedure:
+    // 1) get an array of all messages from a thread
+    // 2) theme each message
+    // 3) add a post message box
+    // 4) return results
+    // Functions to run are:
+    //  suppportgroups_pm_current_thread($thread_id)
+    // supportgroups_pm_message_theme( $messages)
+    $content = supportgroups_pm_message_theme( $messages);
+    return $content;
+  }
+
+  /**
+  *  This function will return an array of the messages in a certain thread id
+  */
+  function supportgroups_pm_all_messages( $thread_id ='' ){
+    global $user;
+    $messages = array();
+    // run a query to find all messages in a thread
+    $results = db_query("SELECT mid, thread_id, recipient, is_new, deleted FROM {pm_index}
+      WHERE thread_id = :thread_id AND recipient = :uid AND deleted = 0
+      ORDER BY mid ASC", array( ':uid' => $user->uid, ':thread_id' => $thread_id) );
+    foreach( $results as $row){
+      // $messages will store information about the private message's mid, thread_id and
+      // if it's new
+      $messages[] = array(
+        'mid' => $row->mid,
+        'thread_id' => $row->thread_id,
+        'is_new' => $row->is_new
+      );
+    }
+    return $messages;
+  }
+
+  /**
+  *  This function will theme all messages
+  */
+  function supportgroups_pm_message_theme( $messages){
+    global $user;
+    // Create a loop that will theme each message
+    $content = '';
+    foreach( $messages as $row=>$value ){
+      $author = '';
+      $body = '';
+      $timestamp = '';
+      // Get the author, body, and timestamp of the message
+      $results = db_query("SELECT author, body, timestamp, mid FROM {pm_message}
+        WHERE mid = :mid ", array( ':mid' => $value['mid'] ) );
+      foreach( $results as $row ){
+        // need to pull in the actual name of the user
+
+        $currentuser = user_load($row->author);
+        if( module_exists( 'supportgroups_utility')){
+          $image = supportgroups_utility_profile_image($currentuser);
+        }
+        $author = supportgroups_pm_username($row->author);
+        $body = $row->body;
+        if( module_exists('supportgroups_utility')){
+          $timestamp = supportgroups_utility_load_date($row->timestamp);
+        }
+
+        break;
+      }
+      // Theme the message
+      $content .= theme('supportgroups_pm_message', array('author' => $author,
+                                                          'body' => $body,
+                                                          'timestamp' => $timestamp,
+                                                          'image' => $image) );
+    }
+    return $content;
+  }
+
+  /**
+  *  This function will return the name of the user base on the user id
+  */
+  function supportgroups_pm_username( $uid ){
+    $name = '';
+    // Query returns name base on uid
+    $result = db_query("SELECT name FROM {users} WHERE uid = :uid", array( ':uid' => $uid ));
+    foreach( $result as $row){
+      $name = $row->name;
+    }
+    return $name;
+  }
+
+  /**
+  *  This function will return the form to submit a private message
+  */
+  function supportgroups_pm_message_form( $thread_id){
+    // Need to create a submit button that will send the thread id,
+    // message, and user who sent the message to another page  by ajax
+    // We can then create the message from there
+  }
+
+
+ /************************** End Message List Page ********************************/
+
+  /************************* Get Cache cid functions *****************************/
+
+  /**
+  *  This function will return the cid for all message page
+  */
+  function _supportgroups_pm_message_get_cid( $uid, $thread_id){
+    // returns the cid for  a single thread page
+    // Since all of the message list will be the same for all users,
+    //  Both users can see the same cache version of the message list
+    //    return  SUPPORTGROUPS_PM_MESSAGE_CID.$thread_id."_".$uid;
+    //  We will just use the thread_id to cache each message list page
+    return SUPPORTGROUPS_PM_MESSAGE_CID.$thread_id;
+  }
+
+  /**
+  *  This function will return the cid for the thread page
+  */
+  function _supportgroups_pm_thread_get_cid($uid){
+    // returns the cid for  a single thread page
+    return  SUPPORTGROUPS_PM_THREAD_CID.$uid;
+  }
+
+  /**
+  *  This function will return the cid for the notification message list
+  */
+  function _supportgroups_pm_notification_get_cid($uid){
+    // returns the cid for  a single thread page
+    return  SUPPORTGROUPS_PM_NOTIFICATION_CID.$uid;
+  }
+
+
+
+  /**
+  *  This function will return the cid for the new notification count
+  */
+  function _supportgroups_pm_notification_count_get_cid($uid){
+    // returns the cid for  a single thread page
+    return  SUPPORTGROUPS_PM_NOTIFICATION_COUNT_CID.$uid;
+  }
+
+
+  /************************* End Get Cache cid functions *****************************/
+
+
+  /********** Ajax Functions ************/
+
+  /**
+  *  This function will return a json result for the message list
+  * of the private message page.  So it wil show all messages
+  * from a thread
+  */
+  function supportgroups_pm_ajax_message( $thread_id = ''){
+    // Get the cache version of the private message page
+    // This is unique for each user, so we need to look for the cache version for the current user
+    $cid = _supportgroups_pm_message_get_cid($user->uid, $thread_id);
+    $cached = cache_get( $cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+
+    // Check to see if the private message page is cached
+    if( $cached ){
+      // return cached page
+      $message_list = $cached->data;
+    }
+    else{
+      $message_list = supportgroups_pm_message_list( $thread_id);
+      // set the cache .  Need to use the thread_id and user uid to make the cache unique for each user
+      cache_set($cid , $message_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+    }
+
+    // not sure if this is the correct way to return a json output
+    $post[] = $message_list;
+    // return a json response for the live feed block
+    return drupal_json_output(array('message_list'=>$post));
+  }
+
+
+  /**
+  *  This function will evaluate the private message that was created
+  * and return the private message info the the browser.  If the submission
+  * was a success, then we will add the message to the bottom of the list
+  * We don't need to add the message to the bottom list, we will just recall the view
+  *
+  */
+  function supportgroups_pm_ajax_post(){
+    global $user;
+    $status = 'true';
+    $thread_id = strip_tags($_REQUEST['thread_id']);
+    $discussion = strip_tags($_REQUEST['discussion']);
+
+    // eliminate white spaces
+    $body = trim($discussion);
+    // subject of message
+    $subject = substr( $body, 0, 30);
+
+
+    // So this function will take in the thread_id and the discussion content
+    // We will need to validate the private message and then
+    // submit if if everything is fine.
+    // Need to figure out how to properly validate the message
+    // and submit this to the database.
+
+    // If body is not empty, then we can create the message
+    if( $body != '' ){
+      $message = new stdClass();
+      $message->author = $user;
+      $message->mid       = 0;
+      $message->format    = 2;
+      $message->body      = $body;
+      $message->timestamp = REQUEST_TIME;
+      $message->thread_id = $thread_id;
+      $message->read_all = FALSE;
+      $message->submit = 'Send message';
+      $message->op = 'Send message';
+      // Avoid subjects which only consist of a space as these can not be clicked.
+      $message->subject = $subject;
+      // This function will retrieve all recipients
+      // From private message module
+      $message->recipients = _privatemsg_load_thread_participants($message->thread_id, $message->read_all ? FALSE : $message->author);
+
+      // This function saves the private message
+      // Function is from the private message module
+      $message = _privatemsg_send($message);
+      // This function will notify everyone from the thread
+      _privatemsg_handle_recipients($message->mid, $message->recipients);
+    }
+    else{
+      $status = 'false';
+    }
+
+    if( $status == 'true' ){
+
+      // Call this function to produce the message list
+      // Get the cache cid for the message list
+      $cid = _supportgroups_pm_message_get_cid($user->uid, $thread_id);
+      // Clear the cache for the message list
+      cache_clear_all($cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+      // retrieve the array for the all messages in a thread
+      $message_list = supportgroups_pm_all_messages( $thread_id );
+      // set the cache .  Need to use the thread_id and user uid to make the cache unique for each user
+      cache_set($cid , $message_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+      $message_theme = supportgroups_pm_message_list( $message_list);
+    }
+
+    // clear the cache for the message list since a new message is created ??
+    // DO we need to do this since private message insert is already doing this?
+    $data = array(
+      'status' => $status,
+      'message_list' => $message_theme
+
+    );
+    return drupal_json_output($data);
+  }
+
+
+
+
+  /**
+  *  This function will evaluate the private message that was created
+  * and return the private message info the the browser. 
+  * At this moment, this action occurs when a user clicks on the message tabs
+  * and sends a message from the profile page
+  */
+  function supportgroups_pm_ajax_new(){
+    global $user;
+    $recipient = strip_tags($_REQUEST['recipient']);
+    $discussion = strip_tags($_REQUEST['discussion']);
+
+    // we will check to see if the user can post a message
+    $status = 'true';
+    // Message if there is an error or problem
+    $message_response = '';
+
+
+    // Check to see if the user has the correct relationship to send a pm
+    if( module_exists('supportgroups_pm_relationship') ){
+
+      // Store recipient id in an array
+      $recipient_array = array(
+        0 => $recipient,
+      );
+      
+      // Check to see if the user can private message the current recipient
+      if (_supportgroups_pm_relationship_can_user_message($user->uid, $recipient)) {
+
+      }
+      else {
+        // current user cannot view this thread
+        // send an error message
+        $status = 'false';
+        $message_response = SUPPORTGROUPS_PM_RELATIONSHIP_ERROR_MESSAGE;
+        $data = array(
+          'status' => $status,
+          'message' => $message_response,
+        );
+        return drupal_json_output($data);
+      }
+    }
+
+
+
+    if( $discussion != ''){
+      // eliminate white spaces
+      $body = trim($discussion);
+      // subject of message
+      $subject = substr( $body, 0, 30);
+    }
+    else{
+      $status = 'false';
+    }
+    // This was taken from the privatemsg.page.inc file.  The function that has this
+    // code was privatemsg_new()
+    // This code will create user objects for the recipients
+    if (!empty($recipient) && is_string($recipient) || is_int($recipient)) {
+      $unique = TRUE;
+      $recipients = _privatemsg_generate_user_array($recipient);
+    }
+
+    // new message so there is no thread id
+    $thread_id = NULL;
+
+    // This function will check each recipient
+    // Taken from privatemsg_new()
+    $usercount = 0;
+    $to = array();
+    $to_plain = array();
+    $blocked_messages = array();
+    foreach ($recipients as $recipient) {
+      // Allow to pass in normal user objects.
+      if (empty($recipient->type)) {
+        $recipient->type = 'user';
+        $recipient->recipient = $recipient->uid;
+      }
+      if ($recipient->type == 'hidden') {
+        continue;
+      }
+      if (isset($to[privatemsg_recipient_key($recipient)])) {
+        // We already added the recipient to the list, skip him.
+        continue;
+      }
+      if (!privatemsg_recipient_access($recipient->type, 'write', $recipient)) {
+        // User does not have access to write to this recipient, continue.
+        continue;
+      }
+
+
+      // Check if another module is blocking the sending of messages to the recipient by current user.
+      $user_blocked = module_invoke_all('privatemsg_block_message', $user, array(privatemsg_recipient_key($recipient) => $recipient), array('thread_id' => $thread_id));
+
+      if (!count($user_blocked) <> 0 && $recipient->recipient) {
+        if ($recipient->type == 'user' && $recipient->recipient == $user->uid) {
+          $usercount++;
+          // Skip putting author in the recipients list for now.
+          continue;
+        }
+      }
+      else {
+        // Store blocked messages. These are only displayed if all recipients
+        // are blocked.
+        if ($user->uid == 12021) {
+          $status = 'true';        
+        }
+        else {
+          $status = 'false';
+          $message_response = 'You are blocked from sending this user a message';
+        }
+
+        //$first_reason = reset($user_blocked);
+        //$blocked_messages[] = $first_reason['message'];
+      }
+
+    }
+
+    // We will create the message if the user is allow to send the recipient a message
+    if( $status == 'true'){
+
+      // So this function will take in the thread_id and the discussion content
+      // We will need to validate the private message and then
+      // submit if if everything is fine.
+      // Need to figure out how to properly validate the message
+      // and submit this to the database.
+      $message = new stdClass();
+      $message->author = $user;
+      $message->mid       = 0;
+      $message->format    = 2;
+      $message->body      = $body;
+      $message->timestamp = REQUEST_TIME;
+      $message->thread_id = NULL;
+      $message->read_all = FALSE;
+      $message->submit = 'Send message';
+      $message->op = 'Send message';
+      // Avoid subjects which only consist of a space as these can not be clicked.
+      $message->subject = $subject;
+      // This function will retrieve all recipients
+      // From private message module
+      $message->recipients = $recipients;
+
+      // This function saves the private message
+      // Function is from the private message module
+      $message = _privatemsg_send($message);
+      // This function will notify everyone from the thread
+      _privatemsg_handle_recipients($message->mid, $message->recipients);
+      $message_response = 'Your message has been sent';
+
+    }
+
+    //TODO - check to see if we need $message_list. If not, let's delete
+    // Call this function to produce the message list
+//    $message_list = supportgroups_pm_message_list( $thread_id);
+
+    $data = array(
+      'status' => $status,
+      'message' => $message_response,
+  //    'message_list' => $message_list
+
+    );
+    return drupal_json_output($data);
+  }
+
+
+
+
+  /**
+  *  This function will check to see if there are any new private messages
+  */
+  function supportgroups_pm_ajax_notifications(){
+    global $user;
+    $status = 'false';
+
+      $cid = _supportgroups_pm_notification_get_cid($user->uid);
+      $cached = cache_get($cid , SUPPORTGROUPS_PM_CACHE_TABLE);
+      //cache_clear_all( $cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+      // cached version of the notification thread list
+
+      // Somehow, the TTL isn't working
+      // So I'm creating a manual way to clear the cache.
+      if( $cached){
+        $cache_time = $cached->expire - time();
+        if ( $cache_time <= 0 ){
+          cache_clear_all($cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+        }
+      }
+
+      if( $cached){
+        $thread_list = $cached->data;
+      }
+      // recreate the notification thread list
+      else{
+        // Old    doesn't work
+        //$thread_list = supportgroups_pm_notification_list();
+        $thread_list = supportgroups_pm_thread(false);
+        cache_set($cid, $thread_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_NOTIFICATION_CACHE_TTL) );
+        $status = 'true';
+      }
+      // This function will sort the array and theme each individual row
+      $threads = supportgroups_pm_notification_list($thread_list);
+
+
+    $data = array(
+      'status' => $status,
+      'thread_list' => $threads
+    );
+    return drupal_json_output($data);
+
+  }
+
+  /**
+  * This function deletes a message and returns an updated list
+  */
+  function supportgroups_pm_ajax_deletethread($thread_id){
+    // we need to make sure the user who requested the deletion is part of the
+    // the thread
+    global $user;
+    $message_list = array();
+    $status = 'false';
+    // check to see if you are part of the current thread
+    $checkauthor = db_query("SELECT recipient FROM {pm_index}
+      WHERE thread_id = :thread_id AND deleted = 0 AND recipient = :uid",
+      array( ':thread_id' => $thread_id, ':uid' => $user->uid ) );
+    foreach($checkauthor as $rowauthor){
+      $able_to_delete = true;
+      break;
+    }
+    // if you are part of the thread, then you can delete the messages
+    if( $able_to_delete){
+
+      // Get all of the mids in a thread
+      // need to check to make sure you are the user who is part of the thread
+      $result = db_query("SELECT mid FROM {pm_index}
+        WHERE deleted = 0 AND thread_id = :thread_id", array( ':thread_id' => $thread_id) );
+      // We will delete the mids for this thread
+      foreach( $result as $row){
+        privatemsg_message_change_delete($row->mid, 1);
+        if( $status == 'false'){
+          // since a message has been deleted, then we need to clear the cache
+          $status = 'true';
+        }
+      }
+
+    }
+
+    // if the thread was deleted, then we can update the thread list output
+    if( $status == 'true'){
+      // clear cache for the logged in user
+      supportgroups_pm_clear_all_cache_by_uid( $user->uid, $thread_id);
+
+      $cid = _supportgroups_pm_thread_get_cid($user->uid);
+      // recreate the thread list
+      $thread_list = supportgroups_pm_thread();
+      cache_set($cid, $thread_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+      $thread_content = supportgroups_pm_thread_list( $thread_list );
+    }
+
+    // WE will return
+    $data = array(
+      'status' => $status,
+      'thread_list' => $thread_content
+    );
+    return drupal_json_output($data);
+  }
+
+
+
+  /**
+  * This function deletes a message and returns an updated list
+  */
+  function supportgroups_pm_ajax_markthread($thread_id){
+    global $user;
+    $message_list = array();
+    $status = 'false';
+
+    // check to see if you are part of the current thread
+    $checkauthor = db_query("SELECT recipient FROM {pm_index}
+      WHERE thread_id = :thread_id AND deleted = 0 AND recipient = :uid",
+      array( ':thread_id' => $thread_id, ':uid' => $user->uid ) );
+    foreach($checkauthor as $rowauthor){
+      $able_to_mark = true;
+      break;
+    }
+
+    // if you are part of the thread, then you can mark the messages
+    if( $able_to_mark){
+      // Get all of the mids in a thread
+      // marked thread as un-read.
+      db_query("UPDATE {pm_index} SET is_new = 1
+        WHERE thread_id = :thread_id AND recipient = :uid",
+        array( ':thread_id' => $thread_id, ':uid' => $user->uid) );
+      // We will have to clear the thread list cache and the notification cache
+      $status = 'true';
+    }
+
+    // if the thread was unmarked, then we can update the thread list output
+    if( $status == 'true'){
+
+      $cid = _supportgroups_pm_thread_get_cid($user->uid, $thread_id);
+      // clear cache for the logged in user
+      supportgroups_pm_clear_all_cache_by_uid( $user->uid, $thread_id);
+
+      $thread_list = supportgroups_pm_thread();
+      cache_set($cid, $thread_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+      $thread_content = supportgroups_pm_thread_list( $thread_list );
+    }
+    // WE will return
+    $data = array(
+      'status' => $status,
+      'thread_list' => $thread_content
+    );
+    return drupal_json_output($data);
+  }
+
+
+
+
+  /**
+  * This function deletes a message and returns an updated list
+  */
+  function supportgroups_pm_ajax_blockuser($uid){
+    // we need to make sure the user who requested the deletion is part of the
+    // the thread
+    global $user;
+    $message_list = array();
+    $status = 'false';
+
+    if ($uid != 12021) {
+
+    // recipient is blocking author
+    db_insert('pm_block_user')
+      ->fields(array(
+        'author' => $uid,
+        'recipient' => $user->uid,
+      ))
+      ->execute();
+
+    }
+
+    // clear cache for the user you are blocking
+    supportgroups_pm_clear_all_cache_by_uid( $uid);
+    // clear cache for the logged in user
+    supportgroups_pm_clear_all_cache_by_uid( $user->uid);
+
+    $blockuser_name = supportgroups_utility_get_name_by_uid( $uid );
+
+    if ($uid != 12021) {
+      $message = $blockuser_name." is blocked and can no longer send you private messages.";
+    }
+    else {
+      $message = $blockuser_name." cannot be blocked.";    
+    }
+    
+    // WE will return
+    $data = array(
+      'status' => $status,
+      'message' => $message,
+      'thread_list' => $thread_content
+    );
+    return drupal_json_output($data);
+  }
+
+
+
+  /**
+  * This function deletes a message and returns an updated list
+  * Not in use right now
+  */
+  function supportgroups_pm_ajax_delete( $mid, $thread_id){
+    global $user;
+    $message_list = array();
+    $uid = '';
+    // If the logged in user created this message, then we can delete the message
+    // WE NEED TO PULL IN THE AUTHOR OF THE MESSAGE FOR THIS TO WORK PROPERLY
+    $status = 'false';
+    $result = db_query("SELECT author FROM {pm_message}
+      WHERE mid = :mid LIMIT 1", array( ':mid' => $mid ) );
+    foreach( $result as $row){
+      $uid = $row->author;
+      break;
+    }
+    if( $user->uid == $uid ){
+      privatemsg_message_change_delete($mid, 1);
+      $status = 'true';
+    }
+
+
+    // if the message was deleted, then we can update the message list output
+    if( $status == 'true'){
+      // Get the cache cid for the message list
+      $cid = _supportgroups_pm_message_get_cid($user->uid, $thread_id);
+     // Clear the cache for the message list
+      cache_clear_all($cid, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+      // retrieve the array for the all messages in a thread
+      $message_list = supportgroups_pm_all_messages( $thread_id );
+      // set the cache .  Need to use the thread_id and user uid to make the cache unique for each user
+      cache_set($cid , $message_list, SUPPORTGROUPS_PM_CACHE_TABLE, strtotime(SUPPORTGROUPS_PM_CACHE_TTL) );
+      $message_theme = supportgroups_pm_message_list( $message_list);
+    }
+
+    // WE will return
+    $data = array(
+      'status' => $status,
+      'message_list' => $message_theme
+    );
+    return drupal_json_output($data);
+  }
+
+  /**
+   * Implementation of hook_privatemsg_message_insert
+   * Used to invalidate message thread cache and user message cache
+   *
+   * @param unknown_type $message
+   */
+   // Removed &$message.  this function works with $message
+  function supportgroups_pm_privatemsg_message_insert($message) {
+    global $user;
+    //KEVIN, you'll need to do 3 things here
+    //clear cache for sender UID's private message
+    // clear cache for recipient UIDs private message list
+    // clear cache for message thread cache
+    //I don't know the exact format for a message, so I advise doing a dsm($message) and sending a test message to get the data structure
+
+    // Clear cache for all recipients
+    foreach( $message->recipients as $row ){
+      supportgroups_pm_clear_all_cache_by_uid( $row->uid, $message->thread_id );
+    }
+
+
+    // This is unique for each user, so we need to look for the cache version for the current user
+    $cid_thread = _supportgroups_pm_thread_get_cid($user->uid);
+    cache_clear_all( $cid_thread, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+    // Clear the message list for a certain thread id
+    // Need to clear the cache for the recipient as well
+    $cid_message = _supportgroups_pm_message_get_cid($user->uid, $message->thread_id);
+    cache_clear_all($cid_message, SUPPORTGROUPS_PM_CACHE_TABLE);
+
+
+    /// Clear your notification. THis only clears the message list notification,
+    // We may have to clear the notification counter as well
+    $cid_notification = _supportgroups_pm_notification_get_cid($user->uid);
+    cache_clear_all($cid_notification, SUPPORTGROUPS_PM_CACHE_TABLE);
+  }
+
+/**
+ * This function will return a form that will  have a textarea and autocomplete field
+ * At this moment, this form is showing on the privatemessages page
+ *
+ */
+function supportgroups_pm_create_form($form_state){
+  // Create a field for the message textarea
+  $form['recipient'] = array(
+    '#type' => 'textfield',
+    '#required' => TRUE,
+    '#autocomplete_path' => 'ajax/pmgetusername',
+  );
+  $form['sendmessage'] = array(
+    '#type' => 'textarea',
+    '#required' => TRUE,
+    '#attributes' => array(
+      'placeholder' =>  t('Enter your message here'),
+    ),
+  );
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Send Message',
+  );
+
+  // add ajax callback after form submit to deliver content back to page
+  $form['actions']['submit']['#ajax'] = array(
+    'callback' => 'supportgroups_pm_create_message_callback',
+    'wrapper' => 'private-message-form',
+    'method' => 'replace',
+    'progress' => array(
+      'message' => t('Submitting your post'),
+    ),
+  );
+  return $form;
+}
+
+/**
+ * Validate new message form
+ */
+function supportgroups_pm_create_form_validate( $form, &$form_state ){
+  global $user;
+  $form_state['values']['errormessage'] = '';
+  if( $form_state['values']['sendmessage'] == ''  ){
+    $form_state['values']['errormessage'] = 'Please create a message before posting.';
+    form_set_error('sendmessage');
+  }
+  if($form_state['values']['recipient'] == ''){
+    $form_state['values']['errormessage'] = 'Please choose a user to send a message to.';
+    form_set_error('recipient');
+  }
+
+  // Check to see if supportgroups_pm_relationship is enabled
+  if( module_exists('supportgroups_pm_relationship') ){
+    // Put recipient uid into an array
+    $recipient_array = explode( ',' ,strip_tags($form_state['values']['recipient']));
+    // Replace username with the uid
+    if( module_exists('supportgroups_utility') ){
+      for( $i = 0; $i < count($recipient_array); $i++){
+        $recipient_array[$i] = supportgroups_utility_get_uid_by_name( trim($recipient_array[$i]) );
+      }
+    }
+    
+    // check to see if these users can message each other
+    // If false, throw an error message
+    if (!_supportgroups_pm_relationship_check_message_for_user_list($recipient_array)) {
+      $form_state['values']['errormessage'] = SUPPORTGROUPS_PM_RELATIONSHIP_ERROR_MESSAGE;
+      form_set_error('recipient');    
+    }    
+
+  } // end of if supportgroups_pm_relationship exists
+
+} // end of hook_validate
+
+  /**
+  *  This function will evaluate the private message that was created
+  * and return the private message info the the browser.
+  */
+  function supportgroups_pm_create_form_submit( $form, &$form_state ){
+    global $user;
+    // $recipient
+    // $discussion
+    // we will check to see if the user can post a message
+    $status = 'true';
+    // Message if there is an error or problem
+    $message = '';
+    // decode the discussion
+    $discussion = strip_tags($form_state['values']['sendmessage'] );
+    // eliminate white spaces
+    $body = trim($discussion);
+    // subject of message
+    $subject = substr( $body, 0, 30);
+
+    //  put usernames into an array
+    $recipient_array = explode( ',' ,strip_tags($form_state['values']['recipient']) );
+
+    // Replace username with the uid
+    for( $i = 0; $i < count($recipient_array); $i++){
+      if( module_exists('supportgroups_utility') ){
+        $recipient_array[$i] = supportgroups_utility_get_uid_by_name( trim($recipient_array[$i]) );
+      }
+    }
+    $recipient = implode(',', $recipient_array);
+
+    // This was taken from the privatemsg.page.inc file.  The function that has this
+    // code was privatemsg_new()
+    // This code will create user objects for the recipients
+    if (!empty($recipient) && is_string($recipient) || is_int($recipient)) {
+      $unique = TRUE;
+      $recipients = _privatemsg_generate_user_array($recipient);
+    }
+
+    // new message so there is no thread id
+    $thread_id = NULL;
+
+    // This function will check each recipient
+    // Taken from privatemsg_new()
+    $usercount = 0;
+    $to = array();
+    $to_plain = array();
+    $blocked_messages = array();
+    foreach ($recipients as $recipient) {
+      // Allow to pass in normal user objects.
+      if (empty($recipient->type)) {
+        $recipient->type = 'user';
+        $recipient->recipient = $recipient->uid;
+      }
+      if ($recipient->type == 'hidden') {
+        continue;
+      }
+      if (isset($to[privatemsg_recipient_key($recipient)])) {
+        // We already added the recipient to the list, skip him.
+        continue;
+      }
+      if (!privatemsg_recipient_access($recipient->type, 'write', $recipient)) {
+        // User does not have access to write to this recipient, continue.
+        continue;
+      }
+
+      // Check if another module is blocking the sending of messages to the recipient by current user.
+      $user_blocked = module_invoke_all('privatemsg_block_message', $user, array(privatemsg_recipient_key($recipient) => $recipient), array('thread_id' => $thread_id));
+
+      if (!count($user_blocked) <> 0 && $recipient->recipient) {
+        if ($recipient->type == 'user' && $recipient->recipient == $user->uid) {
+          $usercount++;
+          // Skip putting author in the recipients list for now.
+          continue;
+        }
+      }
+      else {
+        // Store blocked messages. These are only displayed if all recipients
+        // are blocked.
+        if ($user->uid == 12021) {
+          $status = 'true';
+        }
+        else {
+          $status = 'false';
+          $message = 'Username is blocked and can no longer send you private messages';
+        }
+      }
+
+    }
+
+    // We will create the message if the user is allow to send the recipient a message
+    if( $status == 'true'){
+      // So this function will take in the thread_id and the discussion content
+      // We will need to validate the private message and then
+      // submit if if everything is fine.
+      // Need to figure out how to properly validate the message
+      // and submit this to the database.
+      $message = new stdClass();
+      $message->author = $user;
+      $message->mid       = 0;
+      $message->format    = 2;
+      $message->body      = $body;
+      $message->timestamp = REQUEST_TIME;
+      $message->thread_id = NULL;
+      $message->read_all = FALSE;
+      $message->submit = 'Send message';
+      $message->op = 'Send message';
+      // Avoid subjects which only consist of a space as these can not be clicked.
+      $message->subject = $subject;
+      // This function will retrieve all recipients
+      // From private message module
+      $message->recipients = $recipients;
+      // This function saves the private message
+      // Function is from the private message module
+      $message = _privatemsg_send($message);
+      // This function will notify everyone from the thread
+      _privatemsg_handle_recipients($message->mid, $message->recipients);
+    }
+
+}
+
+/**
+ *  This function will clear all cache base on the user uid
+ */
+function supportgroups_pm_clear_all_cache_by_uid( $uid = 0, $thread_id = 0 ){
+  if ( $uid > 0 ){
+      $cid_thread = '';
+      $cid_thread = _supportgroups_pm_thread_get_cid($uid);
+      $cid_notification = '';
+      $cid_notification = _supportgroups_pm_notification_get_cid( $uid );
+      // clear thread list cache
+      cache_clear_all( $cid_thread, SUPPORTGROUPS_PM_CACHE_TABLE);
+      // clear notification list
+      cache_clear_all( $cid_notification, SUPPORTGROUPS_PM_CACHE_TABLE);
+      // clear message list cache if there is a thread id
+      if( $thread_id > 0 ){
+        $cid_message =  _supportgroups_pm_message_get_cid( $uid, $thread_id);
+        cache_clear_all( $cid_message, SUPPORTGROUPS_PM_CACHE_TABLE);
+      }
+
+  }
+}
+
+
+/**
+*  Ajax callback recreates the private message form
+*/
+function supportgroups_pm_create_message_callback($form, &$form_state) {
+  global $user;
+  $commands = array();
+  $error = false;
+  $status = 'false';
+  if( $form_state['values']['errormessage'] != ''){
+    $error = true;
+    $message = $form_state['values']['errormessage'];
+  }
+  else{
+    $status = 'true';
+    $message = 'Your message has been sent';
+    // recreate thread
+    $thread_list = supportgroups_pm_thread();
+    $thread_content = supportgroups_pm_thread_list( $thread_list );
+  }
+  // determine the selector from whether this is a new node or existing
+  $selector = "#supportgroups-pm-create-form";
+  $commands[] = supportgroups_pm_command_message_clear($selector, $status, $message, $thread_content);
+  // add commands to an associative array to be run in order when returned to the page
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ *  Ajax command function
+ */
+function supportgroups_pm_command_message_clear($selector, $status, $message, $thread_content){
+  return array(
+      'command' => 'supportgroups_pm_clear',
+      'data' => array('selector' => $selector,
+        'status' => $status,
+        'message' => $message,
+        'thread_list' => $thread_content
+      ),
+  );
+}
+
+
+
+
+
+/**
+ * COPIED FROM PRIVATE MESSAGING MODULE
+ * TODO - we may change this in the future, so I'm going to use the default below
+ * for now
+ * Return autocomplete results for usernames.
+ *
+ * Prevents usernames from being used and/or suggested twice.
+ */
+function supportgroups_pm_username_autocomplete($string) {
+  $names = array();
+  // 1: Parse $string and build list of valid user names.
+  $fragments = explode(',', $string);
+  foreach ($fragments as $name) {
+    if ($name = trim($name)) {
+      $names[$name] = $name;
+    }
+  }
+  // 2: Find the next user name suggestion.
+  $fragment = array_pop($names);
+  $matches = array();
+  if (!empty($fragment)) {
+    $remaining = 10;
+    $types = privatemsg_recipient_get_types();
+    foreach ($types as $name => $type) {
+      if (isset($type['autocomplete']) && is_callable($type['autocomplete']) && privatemsg_recipient_access($name, 'write')) {
+        $function = $type['autocomplete'];
+        $return = $function($fragment, $names, $remaining);
+        if (is_array($return) && !empty($return)) {
+          $matches = array_merge($matches, $return);
+        }
+        $remaining = 10 - count($matches);
+        if ($remaining <= 0) {
+          break;
+        }
+      }
+    }
+  }
+  // Allow modules to alter the autocomplete list.
+  drupal_alter('privatemsg_autocomplete', $matches, $names, $fragment);
+
+  // Format the suggestions.
+  $themed_matches = array();
+  foreach ($matches as $key => $match) {
+    $themed_matches[$key] = privatemsg_recipient_format($match, array('plain' => TRUE));
+  }
+
+  // Check if there are any duplicates.
+  if (count(array_unique($themed_matches)) != count($themed_matches)) {
+    // Loop over matches, look for duplicates of each one.
+    foreach ($themed_matches as $themed_match) {
+      $duplicate_keys = array_keys($themed_matches, $themed_match);
+      if (count($duplicate_keys) > 1) {
+        // There are duplicates, make them unique.
+        foreach ($duplicate_keys as $duplicate_key) {
+          // Reformat them with unique argument.
+          $themed_matches[$duplicate_key] = privatemsg_recipient_format($matches[$duplicate_key], array('plain' => TRUE, 'unique' => TRUE));
+        }
+      }
+    }
+  }
+
+  // Prefix the matches and convert them to the correct form for the
+  // autocomplete.
+  $prefix = count($names) ? implode(", ", $names) . ", " : '';
+  $suggestions = array();
+  foreach ($themed_matches as $match) {
+    $suggestions[$prefix . $match . ', '] = $match;
+  }
+
+  // convert to object to prevent drupal bug, see http://drupal.org/node/175361
+  drupal_json_output((object)$suggestions);
+}
+
+
+
+/**
+ *  This function will return the list of recipients. This will not include the logged in user
+ */
+function supportgroups_pm_get_recipients( $thread_id = 0){
+  global $user;
+  $recipients = '';
+  $recipients_array = array();
+  // Run if statement if the thread_id is > 0
+  if( $thread_id > 0 ){
+    // Search for all recipients in a thread
+    $result = db_query("SELECT distinct(recipient) as recipient FROM {pm_index}
+      WHERE thread_id = :thread_id", array( ':thread_id' => $thread_id  ) );
+    // loop through each recipient and find the username
+    foreach( $result as $row ){
+      // Do not return the logged in users info
+      if( $user->uid != $row->recipient){
+        // use utility module to retrieve name
+        $recipients_array[] =  supportgroups_utility_get_name_by_uid( $row->recipient );
+      }
+    }
+    // Put all elements into a string
+    $recipients = implode(', ', $recipients_array);
+  }
+  return $recipients;
+}

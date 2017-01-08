@@ -1,0 +1,49 @@
+/* all groups page */
+/*
+	SG green #239948
+	background tan #F0F0E8
+*/
+
+/* remove list padding */
+.region-content .all-support-groups ul {
+	padding:0; }
+
+/* make link to group white */
+.all-support-groups a:link,
+.all-support-groups a:visited {color:white; }
+
+.all-support-groups ul {
+	list-style:none;
+	line-height:3.0;
+	color:white; }
+	.all-support-groups ul li {
+		background:#239948;
+		margin:0.5em 0;
+		padding:0 0.5em;
+		border:1px solid #999999;
+		border-radius:5px; }
+		.all-support-groups li span {
+			display:inline-block; }
+
+			.all-support-groups .views-field-title {
+				width:40%;
+				font-weight:bold; }
+					.views-field-title a {color:white; }
+			.all-support-groups .views-field-nid-1,
+			.all-support-groups .views-field-nid {
+				width:20%;
+				font-size:90%; }
+      .all-support-groups .views-field-nothing,
+			.all-support-groups .views-field-group-group {
+				width:15%;
+				text-align:center;
+				line-height:1.0em; }
+
+/* style join/leave button */
+.all-support-groups .graybutton a {
+	color:#239948;
+	padding:0.3em 1.3em 0.4em 1.3em;
+	display:inline-block; }
+	.all-support-groups .graybutton a:hover {
+		color:darkgreen; }
+

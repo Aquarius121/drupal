@@ -1,0 +1,56 @@
+<?php
+
+/**
+ * Implementation of hook_notifications()
+ */
+function notifications_ml_notifications($op) {
+  switch ($op) {
+    case 'message templates':
+      // Single node templates
+      $types['notifications_content-node-insert-ML'] = array(
+        'object' => 'node',
+        'title' => t('Node Post ML'),
+        'class' => 'Notifications_Node_Insert_ML_Template',
+      );
+      return $types;
+  }
+}
+
+/**
+ * Template for node inserts
+ */
+class Notifications_Node_Insert_ML_Template extends Notifications_Node_Insert_Template {
+  public function get_title() {
+    return t('Mailing list template for node posts');
+  }
+
+  /**
+   * Default texts for this template, may need token replacement
+   */
+  function default_text($type, $options) {
+    switch ($type) {
+      case 'subject':
+        return array(
+          '#tokens' => TRUE,
+          '#markup' => t('[[site:name]]: [node:title]', array(), $options),
+        );
+      case 'content':
+        return array(
+          '#type' => 'messaging_template_text', '#tokens' => TRUE,
+          'header' => '',
+          'teaser' => '[node:body]',
+          'more' => array(
+            '#type' => 'messaging_link',
+            '#text' => t('Online version of this post:', array(), $options),
+            '#url' => '[node:url]',
+          ),
+        );
+      case 'header':
+        return array(
+          '#markup' => '',
+        );
+      default:
+        return parent::default_text($type, $options);
+    }
+  }
+}

@@ -1,0 +1,41 @@
+name = skeletonsub
+description = subtheme of skeletontheme.
+core = 7.x
+
+base theme = skeletontheme
+
+stylesheets[all][] = css/style.css
+stylesheets[all][] = css/colors.css
+stylesheets[all][] = css/buttons.css
+stylesheets[all][] = css/skeleton.css
+
+regions[page_top] = Page top
+
+regions[full_width] = Full width
+regions[header_right] = Header right
+regions[header] = Header
+regions[highlighted] = Highlighted
+regions[notifications] = Notifications
+regions[content_top] = Content Top
+regions[content] = Content
+regions[content_bottom] = Content Bottom
+regions[sidebar_first] = Sidebar first
+regions[sidebar_second] = Sidebar second
+	
+regions[featured_left] = Featured left
+regions[featured_right] = Featured right
+
+regions[footer_first] = Footer first
+regions[footer_second] = Footer second
+regions[footer_third] = Footer third
+regions[footer] = Footer
+regions[closure] = Closure
+
+regions[page_bottom] = Page bottom
+
+regions[help] = Help
+
+
+settings[responsive_menu_state]= 1
+settings[responsive_menu_switchwidth]='760'
+settings[responsive_menu_topoptiontext]= 'Select a page'

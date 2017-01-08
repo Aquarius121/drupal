@@ -1,0 +1,14 @@
+name = supportgroups_views
+description = all views go into this feature
+core = 7.x
+package = Support Groups Features
+dependencies[] = views
+features[ctools][] = views:views_default:3.0
+features[features_api][] = api:2
+features[views_view][] = group_description
+features[views_view][] = image_view
+features[views_view][] = most_commented_clone
+features[views_view][] = online_support_groups
+features[views_view][] = profile_latest_post
+features_exclude[dependencies][ctools] = ctools
+mtime = 1466594111

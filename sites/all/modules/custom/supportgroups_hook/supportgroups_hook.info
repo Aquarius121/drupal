@@ -1,0 +1,10 @@
+;$Id$
+name = Supportgroups hook functionality
+description = Override hooks at the end of implementation - when weight is 99999.
+package = Support Groups
+core = 7.x
+
+dependencies[] = me
+
+files[] = supportgroups_hook.install
+files[] = supportgroups_hook.module

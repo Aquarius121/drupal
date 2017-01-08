@@ -1,0 +1,117 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ *
+ * @ingroup supportgroups_user_points
+ */
+function supportgroups_user_points_schema() {
+  $schema = array();
+
+  $schema['user_points'] = array(
+    'description' => 'The base table for user points.',
+    'fields' => array(
+      'user_points_id' => array(
+        'description' => 'Primary key of the basic entity.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uid' => array(
+        'description' => 'Foreign key of the related user entity.',
+        'type' => 'int',
+        'not null' => TRUE,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp of the entity creation time.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'updated' => array(
+        'description' => 'The Unix timestamp of the last updated time.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'points' => array(
+        'description' => 'The point total for this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'supported_by' => array(
+        'description' => 'The number of users supporting this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_supported_by_time' => array(
+        'description' => 'The last time this user was supported by someone.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'supports' => array(
+        'description' => 'The number of users this user supports.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_supports_time' => array(
+        'description' => 'The last time this user supported someone.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'authored_count' => array(
+        'description' => 'The total number of discussions created by this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_authored_time' => array(
+        'description' => 'The last time this user created a discussion.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'comments_count' => array(
+        'description' => 'The total number of comments created by this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_comment_time' => array(
+        'description' => 'The last time this user commented on a discussion.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'comment_replies_count' => array(
+        'description' => 'The number of comment replies created by this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_comment_reply_time' => array(
+        'description' => 'The last time this user replied to a comment or other reply.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'hearts_count' => array(
+        'description' => 'The total number of hearts created by this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_heart_time' => array(
+        'description' => 'The last time this user clicked on a heart.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'private_messages_count' => array(
+        'description' => 'The total number of private messages sent by this user.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'last_private_message_time' => array(
+        'description' => 'The last time this user sent a private message.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('user_points_id'),
+  );
+
+  return $schema;
+}

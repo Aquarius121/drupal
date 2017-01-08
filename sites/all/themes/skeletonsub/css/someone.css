@@ -1,0 +1,36 @@
+/* support someone page */
+
+.front-posts {
+	font-size:1.3em;
+	background: #ffffff;
+	margin-bottom: 1.0em;
+	padding: 1.0em 1.0em 2.0em 1.0em;
+	border-radius: 10px;
+	border-top: 1px solid #dddddd;
+	border-right: 3px solid #dddddd;
+	border-bottom: 3px solid #dddddd;
+	border-left: 1px solid #dddddd;}
+	.front-posts:hover {
+		background:#f5f5f5; }
+	.activity-item-userinfo{
+		padding-bottom:5px; }
+	.front-posts .user-picture img {
+		float:left;
+		width:75px;
+		height:75px;
+		margin:0 0.7em 0.5em 0;
+		border:1px solid #e2e2d2; }
+	.front-posts .username {
+		font-weight:bold; }
+	.front-posts .body {
+		margin-left:86px; }
+	.front-posts .comments {
+		float:right;
+		height:20px;
+		display:inline-block;
+		background:url(../images/icon-comments.png) no-repeat top left;
+		text-align:left;
+		padding-left:25px; }
+  .front-posts .activity-post-content {
+    display: block;
+  }

@@ -1,0 +1,45 @@
+/* main colors */
+/*
+	SG green #239948
+	background tan #F0F0E8
+*/
+body { color:#444444; }
+
+#navigation ul li a, #navigation ul.sf-menu li a { color:#ffffff; }
+
+a, a:active, a:focus { color:#666; }
+a:hover { opacity: 0.8; }
+
+h1 {color:#aaaaaa; }
+h2, h3, h4, h5, h6 { color:#000000; }
+
+#header {
+	background:#239948; }
+
+#header #site-name a { color:#262626; }
+
+#header #site-name a:hover { color: #3253ad; }
+
+#header #site-slogan { color: #7d7d7d; }
+
+body { border-color:#375199; }
+
+#wrap {
+	border-color:#4565be;
+	background:#f0f0e8; }
+
+#footer { background-color:#f8f8f8; }
+
+#footer { border-color:#d6d6d6; }
+
+.is_new { background:#f5f5f5; }
+
+textarea {background:#fafafa; border:1px solid #dddddd;}
+
+/* badge bullet colors */
+
+.green-badge, a.green-badge {color:#239948;}
+.yellow-badge, a.yellow-badge {color:#E000FF;}
+.blue-badge, a.blue-badge {color:blue;}
+.orange-badge, a.orange-badge {color:orange;}
+.black-badge, a.black-badge {color:black;}

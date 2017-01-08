@@ -1,0 +1,9 @@
+<?php
+
+  /**
+   * Implementation of hook_enable
+   * Set module weight heavier to be called later in the stack
+   */
+  function supportgroups_node_enable() {
+    db_query("UPDATE {system} SET weight = 3 WHERE name = 'supportgroups_node'");
+  }

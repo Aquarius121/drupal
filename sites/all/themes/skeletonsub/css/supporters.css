@@ -1,0 +1,40 @@
+/* supporters and supporting pages */
+
+.view-supportlist .views-row {
+	float:left;
+	width:45%;
+	margin:0 2% 2% 0;
+	height:100px;
+	padding:0.5em;
+	border:1px solid #cccccc;
+	border-radius:7px;
+	background-color:#dddddd;	
+	/* IE10 */ 
+	background-image: -ms-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Mozilla Firefox */ 
+	background-image: -moz-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Opera */ 
+	background-image: -o-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Webkit (Safari/Chrome 10) */ 
+	background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0, #ffffff), color-stop(1, #dddddd));
+	/* Webkit (Chrome 11+) */ 
+	background-image: -webkit-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Proposed W3C Markup */ 
+	background-image: linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* IE6-9 */ 
+	filter:  progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#dddddd'); }
+	.view-supportlist .views-field-picture {
+		float:left;
+		margin-right:.75em;
+		border-radius:6px;
+		border:1px solid #cccccc;}
+		.view-supportlist .views-field-picture img {
+			width:100px;
+			height:100px; }
+
+	.view-supportlist a.username { 
+		font-size:1.4em;
+		color:#444444; }
+	.view-supportlist .profilebadges {
+		font-size:3.5em;
+		line-height:0.8em; }

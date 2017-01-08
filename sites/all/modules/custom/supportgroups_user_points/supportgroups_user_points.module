@@ -1,0 +1,930 @@
+<?php
+
+// default the cron interval to 1 hour
+define('SUPPORTGROUPS_USER_POINTS_NEW_CRON_INTERVAL', '33 * * * *');
+define('SUPPORTGROUPS_USER_POINTS_UPDATED_CRON_INTERVAL', '*/10 * * * *');
+
+define('SUPPORTGROUPS_USER_POINTS_CRON_MAX', variable_get('supportgroups_user_points_max', 25));
+define('SUPPORTGROUPS_USER_POINTS_CRON_FILTER_BY_TIME_AGO', (time() - (3600 * 24 * 2))); // 48 hours
+
+/**
+ * Implements hook_cronapi
+ */
+function supportgroups_user_points_cronapi($op, $job = NULL) {
+  //TODO This job needs to be removed once all active users have been mapped and the hook_user_insert is running
+  $items['supportgroups_user_points_new_user_cron'] = array(
+      'description' => 'Temporary cron task to ensure all users have a user_points entity.',
+      'rule' => SUPPORTGROUPS_USER_POINTS_NEW_CRON_INTERVAL, // run every hour on the 33rd minute
+      'callback' => '_supportgroups_user_points_cron',
+  );
+
+  $items['supportgroups_user_points_update_cron'] = array(
+    'description' => 'Cron task to update user point scores',
+    'rule' => SUPPORTGROUPS_USER_POINTS_UPDATED_CRON_INTERVAL, // run every 10 minutes
+    'callback' => '_supportgroups_user_points_update_cron',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_user_insert
+ * @param array $edit
+ * @param object $account
+ * @param string $category
+ */
+function supportgroups_user_points_user_insert(&$edit, $account, $category) {
+  if($account->is_new) {
+    // create a new user points
+    $user_points = entity_get_controller('user_points')->create($account->uid);
+
+    // save the user points with no forced calculation
+    $user_points = entity_get_controller('user_points')->save($user_points);
+
+    // add to the salesforce cache
+    module_load_include('inc', 'supportgroups_salesforce', 'includes/supportgroups_salesforce.user.tokens');
+
+    if(function_exists('_supportgroups_salesforce_load_user_points_entity')) {
+      _supportgroups_salesforce_load_user_points_entity($account->uid, TRUE);
+    }
+  }
+}
+
+/**
+ * Implements hook_user_delete
+ * @param object $account
+ */
+function supportgroups_user_points_user_delete($account) {
+  // load the user points entity associated to the user
+  $user_points = user_points_load(NULL, array('uid' => $account->uid));
+
+  if($user_points) {
+    // delete the associated user points entity
+    user_points_delete($user_points);
+  }
+}
+
+/**
+ * Implements hook_entity_info().
+ *
+ * This is the fundamental description of the entity.
+ *
+ * It provides a single entity with a single bundle and without revision
+ * support.
+ */
+function supportgroups_user_points_entity_info() {
+  $info['user_points'] = array(
+    'label' => t('User Points Entity'),
+    'controller class' => 'UserPointsController',
+    'base table' => 'user_points',
+    'uri callback' => 'user_points_uri',
+    'fieldable' => FALSE,
+    'entity keys' => array(
+      'id' => 'user_points_id',
+    ),
+    'static cache' => TRUE,
+    'view modes' => array(
+      'full' => array(
+        'label' => t('Full'),
+        'custom settings' => FALSE,
+      ),
+    ),
+  );
+
+  return $info;
+}
+
+/**
+ * Fetch a user points object.
+ *
+ * @param int $user_points_id
+ *   Integer specifying the user points entity id.
+ * @param bool $reset
+ *   A boolean indicating that the internal cache should be reset.
+ *
+ * @return object
+ *   A fully-loaded $user_points object or FALSE if it cannot be loaded.
+ */
+function user_points_load($user_points_id = NULL, $conditions = array(), $reset = FALSE) {
+  $user_points_ids = (isset($user_points_id) ? array($user_points_id) : array());
+  $user_points = user_points_load_multiple($user_points_ids, $conditions, $reset);
+  return $user_points ? reset($user_points) : FALSE;
+}
+
+/**
+ * Loads multiple user points entities.
+ */
+function user_points_load_multiple($user_points_ids = FALSE, $conditions = array(), $reset = FALSE) {
+  return entity_load('user_points', $user_points_ids, $conditions, $reset);
+}
+
+/**
+ * Implements the uri callback.
+ * @param object $user_points
+ */
+function user_points_uri($user_points) {
+  return array(
+    'path' => 'admin/supportgroups/user-points/' . $user_points->user_points_id,
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function supportgroups_user_points_menu() {
+  $items['admin/supportgroups/user-points'] = array(
+    'title' => 'User Points',
+    'page callback' => 'user_points_info_page',
+    'access arguments' => array('view any user points entity'),
+  );
+
+  // The page to view our user points
+  $items['admin/supportgroups/user-points/%user_points'] = array(
+    'title callback' => 'user_points_title',
+    'title arguments' => array(3),
+    'page callback' => 'user_points_view',
+    'page arguments' => array(3),
+    'access arguments' => array('view any user points entity'),
+  );
+
+  // 'View' tab for an individual entity page.
+  $items['admin/supportgroups/user-points/%user_points/view'] = array(
+    'title' => 'View',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+
+  // 'Edit' tab for an individual entity page.
+  $items['admin/supportgroups/user-points/%user_points/edit'] = array(
+    'title' => 'Edit',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('user_points_form', 3),
+    'access arguments' => array('edit any user points entity'),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  // Add example entities.
+  $items['admin/supportgroups/user-points/add/%'] = array(
+    'title' => 'Add an Entity User Points Entity',
+    'page callback' => 'user_points_add',
+    'page arguments' => array(4),
+    'access arguments' => array('create user points entities'),
+  );
+
+  return $items;
+}
+
+/**
+ * Basic information for the page.
+ */
+function user_points_info_page() {
+ $content['preface'] = array(
+   '#type' => 'item',
+   '#markup' => t('You are viewing the user points listing page.'),
+ );
+ $content['table'] = user_points_list_entities();
+
+ return $content;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function supportgroups_user_points_permission() {
+  $permissions = array(
+    'administer user points entities' => array(
+      'title' => t('Administer User Points entities'),
+    ),
+    'view any user points entity' => array(
+      'title' => t('View any Entity User Points entity'),
+    ),
+    'edit any user points entity' => array(
+      'title' => t('Edit any Entity User Points entity'),
+    ),
+    'create user points entities' => array(
+      'title' => t('Create Entity User Points Entities'),
+    ),
+  );
+  return $permissions;
+}
+
+/**
+ * Returns a render array with all user_points entities.
+ */
+function user_points_list_entities() {
+  $content = array();
+  // Load all of our entities.
+  $entities = user_points_load_multiple();
+  if (!empty($entities)) {
+   foreach ($entities as $entity) {
+    // Create tabular rows for our entities.
+    $rows[] = array(
+      'data' => array(
+        'id' => l($entity->user_points_id, 'admin/supportgroups/user-points/'.$entity->user_points_id.'/view'),
+        'uid' => l($entity->uid, 'user/' . $entity->uid),
+        'points' => $entity->points,
+        'supported_by' => $entity->supported_by,
+        'supports' => $entity->supports,
+        'authored_count' => $entity->authored_count,
+        'comments_count' => $entity->comments_count,
+        'comment_replies_count' => $entity->comment_replies_count,
+        'hearts_count' => $entity->hearts_count,
+        'private_messages_count' => $entity->private_messages_count,
+      ),
+    );
+   }
+   // Put our entities into a themed table. See theme_table() for details.
+   $content['entity_table'] = array(
+     '#theme' => 'table',
+     '#rows' => $rows,
+     '#header' => array(
+       t('ID'),
+       t('UID'),
+       t('Points'),
+       t('Supported By'),
+       t('Supports'),
+       t('Authored'),
+       t('Comments'),
+       t('Replies'),
+       t('Hearts'),
+       t('Private Messages'),
+     ),
+   );
+  }
+  else {
+   // There were no entities. Tell the user.
+   $content[] = array(
+     '#type' => 'item',
+     '#markup' => t('No user points entities currently exist.'),
+   );
+  }
+  return $content;
+}
+
+/**
+ * Callback for a page title when this entity is displayed.
+ */
+function user_points_title($entity) {
+  if(!$entity->uid) {
+    return t('Add a user points');
+  }
+
+  return t('User Points @user_points_id', array('@user_points_id' => $entity->user_points_id));
+}
+
+/**
+ * Menu callback to display an entity.
+ *
+ * As we load the entity for display, we're responsible for invoking a number
+ * of hooks in their proper order.
+ *
+ * @see hook_entity_prepare_view()
+ * @see hook_entity_view()
+ * @see hook_entity_view_alter()
+ */
+function user_points_view($entity, $view_mode = 'full') {
+  // Our entity type, for convenience.
+  $entity_type = 'user_points';
+
+  $entity->content = array(
+    '#view_mode' => $view_mode,
+  );
+
+  $entity->content['created'] = array(
+    '#type' => 'item',
+    '#title' => t('Created date'),
+    '#markup' => format_date($entity->created),
+  );
+
+  //TODO either remove or enable. Are points fieldable
+  // field_attach_prepare_view($entity_type, array($entity->user_points_id => $entity), $view_mode);
+
+  entity_prepare_view($entity_type, array($entity->user_points_id => $entity));
+
+  //TODO either remove or enable. Are points fieldable
+  // Now field_attach_view() generates the content for the fields.
+  // $entity->content += field_attach_view($entity_type, $entity, $view_mode);
+
+  // Now to invoke some hooks. We need the language code for
+  // hook_entity_view(), so let's get that.
+  global $language;
+  $langcode = $language->language;
+
+  // invoke hook_entity_view().
+  module_invoke_all('entity_view', $entity, $entity_type, $view_mode, $langcode);
+
+  // invoke hook_entity_view_alter().
+  drupal_alter(array('user_points_view', 'entity_view'), $entity->content, $entity_type);
+
+  // And finally return the content.
+  return $entity->content;
+}
+
+/**
+ * Provides a wrapper on the edit form to add a new entity.
+ */
+function user_points_add($uid = 0) {
+  // make sure the entity doesn't exist
+  $user_points = user_points_load(null, array('uid' => $uid));
+
+  if(!$user_points->user_points_id) {
+   // Create a basic entity structure to be used and passed to the validation
+   // and submission functions.
+   $entity = entity_get_controller('user_points')->create($uid);
+   return drupal_get_form('user_points_form', $entity);
+  }
+
+  // return the user to the admin list
+  drupal_set_message(t('A user points for uid %uid already exists. !link.', array('%uid' => $uid, '!link' => l('Edit here', 'admin/supportgroups/user-points/' . $user_points->user_points_id . '/edit'))));
+  drupal_goto('admin/supportgroups/user-points');
+
+  return $output;
+}
+
+/**
+ * Form function to create a user_points entity.
+ *
+ */
+function user_points_form($form, &$form_state, $entity) {
+  //TODO Review form. Setting to default example for now
+
+  $form['uid'] = array(
+    '#type' => 'textfield',
+    '#title' => t('User UID'),
+    '#required' => TRUE,
+    '#default_value' => $entity->uid,
+  );
+
+  $form['user_points_entity'] = array(
+    '#type' => 'value',
+    '#value' => $entity,
+  );
+
+  //TODO Remove additional fields
+  //field_attach_form('user_points', $entity, $form, $form_state);
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+    '#weight' => 100,
+  );
+
+  $form['delete'] = array(
+    '#type' => 'submit',
+    '#value' => t('Delete'),
+    '#submit' => array('user_points_edit_delete'),
+    '#weight' => 200,
+  );
+
+  return $form;
+}
+
+//TODO Verify Field API and re-enable
+// /**
+//  * Validation handler for user_points_add_form form.
+//  *
+//  * We pass things straight through to the Field API to handle validation
+//  * of the attached fields.
+//  */
+// function user_points_form_validate($form, &$form_state) {
+//   field_attach_form_validate('user_points', $form_state['values']['user_points'], $form, $form_state);
+// }
+
+
+/**
+ * Form submit handler: Submits user_points_add_form information.
+ */
+function user_points_form_submit($form, &$form_state) {
+  $entity = $form_state['values']['user_points_entity'];
+
+  $entity->uid = $form_state['values']['uid'];
+
+  //TODO Resolve Field API
+  // field_attach_submit('user_points', $entity, $form, $form_state);
+  $entity = user_points_save($entity);
+  $form_state['redirect'] = 'admin/supportgroups/user-points/' . $entity->user_points_id;
+}
+
+/**
+ * Form deletion handler.
+ */
+function user_points_edit_delete($form, &$form_state) {
+  $entity = $form_state['values']['user_points_entity'];
+  user_points_delete($entity);
+  drupal_set_message(t('User Points %id has been deleted',
+  array('%id' => $entity->user_points_id))
+  );
+  $form_state['redirect'] = 'admin/supportgroups/user-points';
+}
+
+/**
+ * We save the entity by calling the controller.
+ */
+function user_points_save(&$entity) {
+  return entity_get_controller('user_points')->save($entity);
+}
+
+/**
+ * Use the controller to delete the entity.
+ */
+function user_points_delete($entity) {
+  entity_get_controller('user_points')->delete($entity);
+}
+
+/**
+ * UserPointsControllerInterface definition.
+ *
+ * We create an interface here because anyone could come along and
+ * use hook_entity_info_alter() to change our controller class.
+ * We want to let them know what methods our class needs in order
+ * to function with the rest of the module, so here's a handy list.
+ *
+ * @see hook_entity_info_alter()
+ */
+interface UserPointsControllerInterface
+  extends DrupalEntityControllerInterface {
+
+  /**
+   * Create an entity.
+   */
+  public function create();
+
+  /**
+   * Save an entity.
+   *
+   * @param object $entity
+   *   The entity to save.
+  */
+  public function save($entity);
+
+  /**
+   * Delete an entity.
+   *
+   * @param object $entity
+   *   The entity to delete.
+  */
+  public function delete($entity);
+
+}
+
+/**
+ * UserPointsController extends DrupalDefaultEntityController.
+ *
+ * Our subclass of DrupalDefaultEntityController lets us add a few
+ * important create, update, and delete methods.
+ */
+class UserPointsController
+extends DrupalDefaultEntityController
+implements UserPointsControllerInterface {
+
+  /**
+   * Create and return a new user_points entity.
+   */
+  public function create($uid = 0) {
+    $entity = new stdClass();
+    $entity->type = 'user_points';
+    $entity->user_points_id = 0;
+    $entity->uid = $uid;
+    return $entity;
+  }
+
+  /**
+   * Saves the custom fields using drupal_write_record().
+   * @param object $entity
+   * @param boolean $force_update
+   * @return object
+   */
+  public function save($entity, $force_update = FALSE) {
+    // If our entity has no basic_id, then we need to give it a
+    // time of creation.
+    if (!$entity->user_points_id) {
+      $entity->created = time();
+    }
+
+    // Invoke hook_entity_presave().
+    module_invoke_all('entity_presave', $entity, 'user_points');
+
+    // The 'primary_keys' argument determines whether this will be an insert
+    // or an update. So if the entity already has an ID, we'll specify
+    // user_points_id as the key.
+    $primary_keys = $entity->user_points_id ? 'user_points_id' : array();
+
+    // We're going to invoke either hook_entity_update() or
+    // hook_entity_insert(), depending on whether or not this is a
+    // new entity. We'll just store the name of hook_entity_insert()
+    // and change it if we need to.
+    $invocation = 'entity_insert';
+
+    // Now we need to either insert or update the fields which are
+    // attached to this entity. We use the same primary_keys logic
+    // to determine whether to update or insert, and which hook we
+    // need to invoke.
+    if (empty($primary_keys) && !$force_update) {
+      //TODO Resolve Field API
+      // field_attach_insert('user_points', $entity);
+    } else {
+      //TODO Resolve Field API
+      // field_attach_update('user_points', $entity);
+
+      // we have ids so we are updating and are not forcing the calculation of all fields
+      if(!$force_update) {
+        $invocation = 'entity_update';
+      }
+
+      // set the update value
+      $entity->updated = time();
+
+      // load user info
+      if(module_exists('supportgroups_feed')) {
+        // get user info from cache
+        $user_info = supportgroups_feed_get_user_info($entity->uid);
+
+        if($user_info) {
+          //TODO #1150 When points get update, the helper functions should be wrapped in this module
+          $entity->points = $user_info->points;
+          $entity->supported_by = count($user_info->supported_by);
+          $entity->supports = count($user_info->supports);
+          $entity->authored_count = count($user_info->authored);
+        }
+      }
+
+      //TODO Additional functions are all defined as methods on the entity
+      $entity->last_supported_by_time = $this->getLastSupportedByTime($entity->uid);
+      $entity->last_supports_time = $this->getLastSupportsTime($entity->uid);
+      $entity->last_authored_time = $this->getLastAuthoredTime($entity->uid);
+
+      $comments = $this->loadUserComments($entity->uid);
+      if($comments) {
+        // add comments count
+        $entity->comments_count = $comments['comments'];
+        $entity->last_comment_time = $comments['last_commented_time'];
+        $entity->comment_replies_count = $comments['replies'];
+        $entity->last_comment_reply_time = $comments['last_reply_time'];
+      }
+
+      $hearts = $this->loadUserHearts($entity->uid);
+      if($hearts) {
+        $entity->hearts_count = $hearts['hearts'];
+        $entity->last_heart_time = $hearts['last_heart_time'];
+      }
+
+      $private_messages = $this->loadUserPrivateMessages($entity->uid);
+      if($private_messages) {
+        $entity->private_messages_count = $private_messages['private_messages'];
+        $entity->last_private_message_time = $private_messages['last_private_message_time'];
+      }
+    }
+
+     // Invoke either hook_entity_update() or hook_entity_insert().
+    module_invoke_all($invocation, $entity, 'user_points');
+
+    // Write out the entity record.
+    drupal_write_record('user_points', $entity, $primary_keys);
+
+    return $entity;
+  }
+
+  /**
+  * Delete a single entity.
+  *
+  * Really a convenience function for deleteMultiple().
+  */
+  public function delete($entity) {
+    $this->deleteMultiple(array($entity));
+  }
+
+  /**
+  * Delete one or more user_points entities.
+  *
+  * Deletion is unfortunately not supported in the base
+  * DrupalDefaultEntityController class.
+  *
+  * @param array $entities
+  *   An array of entity IDs or a single numeric ID.
+  */
+  public function deleteMultiple($entities) {
+    $user_points_ids = array();
+    if (!empty($entities)) {
+      $transaction = db_transaction();
+      try {
+        foreach ($entities as $entity) {
+          // Invoke hook_entity_delete().
+          module_invoke_all('entity_delete', $entity, 'user_points');
+          field_attach_delete('user_points', $entity);
+          $user_points_ids[] = $entity->user_points_id;
+        }
+        db_delete('user_points')
+        ->condition('user_points_id', $user_points_ids, 'IN')
+        ->execute();
+      }
+      catch (Exception $e) {
+        $transaction->rollback();
+        watchdog_exception('supportgroups_user_points', $e);
+        throw $e;
+      }
+    }
+  }
+
+  public function getLastSupportedByTime($uid = 0) {
+    if(!$uid) {
+      return 0;
+    }
+
+    $relationships = $this->loadUserRelationships($uid);
+
+    if($relationships) {
+
+      $supported_by = array();
+
+      // user_relationships_load returns all relationships for the given user, so we must filter to get the correct direction for the relationship
+      foreach ($relationships as $relationship_id => $relationship) {
+        if ($uid == $relationship->requestee_id) {
+          $supported_by[$relationship->created] = $relationship->requester_id;
+        }
+      }
+
+      // sort the timestamps, grab the last and return
+      if(count($supported_by)) {
+        ksort($supported_by);
+        end($supported_by);
+        return key($supported_by);
+      }
+    }
+
+    return 0;
+  }
+
+  public function getLastSupportsTime($uid = 0) {
+    if(!$uid) {
+      return 0;
+    }
+
+    $relationships = $this->loadUserRelationships($uid);
+
+    if($relationships) {
+      $supports = array();
+
+      // user_relationships_load returns all relationships for the given user, so we must filter to get the correct direction for the relationship
+      foreach ($relationships as $relationship_id => $relationship) {
+        if ($uid == $relationship->requester_id) {
+          $supports[$relationship->created] = $relationship->requestee_id;
+        }
+      }
+
+      // sort the timestamps, grab the last and return
+      if(count($supports)) {
+        ksort($supports);
+        end($supports);
+        return key($supports);
+      }
+    }
+
+    return 0;
+  }
+
+  public function getLastAuthoredTime($uid = 0) {
+    if(!$uid) {
+      return 0;
+    }
+
+    $query = "SELECT created FROM {node} WHERE uid = :uid AND type IN (:types) ORDER BY created DESC LIMIT 1";
+
+    //TODO Refactor back into this module
+    $types = _supportgroups_feed_activity_feed_node_types();
+
+    $result = db_query($query, array(':uid' => $uid, ':types' => $types));
+
+    if ($result->rowCount()) {
+      return $result->fetchField();
+    }
+
+    return 0;
+  }
+
+  public function loadUserRelationships($uid = 0) {
+    static $relationships = false;
+
+    if($relationships) {
+      return $relationships;
+    } else {
+     if(!$uid) {
+       return false;
+     }
+
+     $args = array(
+       'user' => $uid,
+       'rtid' => SUPPORTGROUPS_FEED_SUPPORT_RELATIONSHIP_ID, // relationship ID for "supporting"
+       'approved' => TRUE
+     );
+
+     $relationships = user_relationships_load($args);
+    }
+
+    return $relationships;
+  }
+
+  public function loadUserComments($uid = 0) {
+    static $return = false;
+    if($return) {
+      return $return;
+    }
+
+    if(!$uid) {
+      return false;
+    }
+
+    // get nids based on issues the given user has commented on
+    $query = "SELECT cid, nid, pid, created FROM {comment} WHERE uid = :uid ORDER BY created DESC";
+
+    $result = db_query($query, array(':uid' => $uid));
+
+    if ($result->rowCount()) {
+      $return = array();
+
+      // set all comments
+      $return['total'] = $result->rowCount();
+
+      $comments = 0;
+      $last_commented_time = 0;
+
+      $replies = 0;
+      $last_reply_time = 0;
+
+      while($comment = $result->fetchObject()) {
+        if($comment->pid) {
+          $replies++;
+
+          if(!$last_reply_time) {
+            $last_reply_time = $comment->created;
+          }
+        }
+        else { // this is a parent comment
+          $comments++;
+
+          if(!$last_commented_time) {
+            $last_commented_time = $comment->created;
+          }
+        }
+      }
+
+      // set the return values
+      $return['comments'] = $comments;
+      $return['last_commented_time'] = $last_commented_time;
+      $return['replies'] = $replies;
+      $return['last_reply_time'] = $last_reply_time;
+    }
+
+    return $return;
+  }
+
+  public function loadUserHearts($uid = 0) {
+    static $return = false;
+
+    if($return) {
+      return $return;
+    }
+
+    if(!$uid) {
+      return false;
+    }
+
+    $query = "SELECT timestamp FROM {flag_content} WHERE uid = :uid AND fid IN (:fids) ORDER BY timestamp DESC";
+
+    $result = db_query($query, array(':uid' => $uid, ':fids' => array(5, 6)));
+
+    if ($result->rowCount()) {
+      $return = array();
+
+      $return['hearts'] = $result->rowCount();
+
+      while($heart = $result->fetchObject()) {
+        $return['last_heart_time'] = $heart->timestamp;
+        break;
+      }
+    }
+
+    return $return;
+  }
+
+  public function loadUserPrivateMessages($uid = 0) {
+    static $return = false;
+    if($return) {
+      return $return;
+    }
+
+    if(!$uid) {
+      return false;
+    }
+
+    $query = "SELECT timestamp FROM {pm_message} WHERE author = :uid ORDER BY timestamp DESC";
+
+    $result = db_query($query, array(':uid' => $uid));
+
+    if ($result->rowCount()) {
+      $return = array();
+
+      $return['private_messages'] = $result->rowCount();
+
+      while($private_message = $result->fetchObject()) {
+        $return['last_private_message_time'] = $private_message->timestamp;
+        break;
+      }
+    }
+
+    return $return;
+  }
+
+}
+
+/**
+ * Callback function for hook_cronapi through Elysia cron; also allows devel to access cron
+ */
+function _supportgroups_user_points_cron() {
+  // set the global for the run so we can use hook_salesforce_push_entity_allowed to prevent sync
+  global $sf_cron;
+  $sf_cron = true;
+
+  $query = db_select('users', 'u');
+
+  // join the user points table to access the last time the user was updated in salesforce
+  $query->leftJoin('user_points', 'up', 'u.uid = up.uid');
+
+  // add the desired returned fields
+  $query->fields('u', array('uid'));
+  $query->fields('up', array('uid'));
+
+  // return only users that do not have a record in the user_points table
+  $query->isNull('up.uid');
+
+  // do not user the 0 uid
+  $query->condition('u.uid', 0, '>');
+
+  // sync to salesforce on the latest users in the list
+  $query->orderBy('u.uid', 'DESC');
+
+  // limit the return
+  $query->range(0, SUPPORTGROUPS_SALESFORCE_CRON_MAX);
+
+  $result = $query->execute();
+
+  while($record = $result->fetchAssoc()) {
+    // load the specific entity
+    $user = user_load($record['uid']);
+
+    // push the user
+    if(is_object($user)) {
+      salesforce_push_entity_crud('user', $user, 2);
+    }
+  }
+}
+
+/**
+ * Helper function to allow devel to access cron
+ */
+function _supportgroups_user_points_update_cron() {
+  // set the global for the run so we can use hook_salesforce_push_entity_allowed to prevent sync
+  global $sf_cron;
+  $sf_cron = true;
+
+  // start query object
+  $query = db_select('user_points', 'up');
+
+  // joing the saleforce table to get the last sync date
+  $query->leftJoin('users', 'u', 'up.uid = u.uid');
+
+  // add the desired returned fields
+  $query->fields('up', array('uid', 'updated'));
+  $query->fields('u', array('access'));
+
+  // return only users that have not been updated in the last period
+  $query->condition('up.updated', SUPPORTGROUPS_USER_POINTS_CRON_FILTER_BY_TIME_AGO, '<');
+
+  // sync to salesforce on the latest users in the list
+  $query->orderBy('u.access', 'DESC');
+
+  // limit the return
+  $query->range(0, SUPPORTGROUPS_USER_POINTS_CRON_MAX);
+
+  $result = $query->execute();
+
+  while($record = $result->fetchAssoc()) {
+    $user_points = user_points_load(NULL, array('uid' => $record['uid']));
+
+    // only update if we have a valid object
+    if($user_points->user_points_id) {
+      // save the user points and force the calculations to update
+      entity_get_controller('user_points')->save($user_points, TRUE);
+
+      // notify the salesforce mapping table by updating the entity_updated tiemstamp
+      if(module_exists('supportgroups_salesforce')) {
+        db_update('salesforce_mapping_object')
+        ->fields(array(
+            'entity_updated' => time(),
+        ))
+        ->condition('entity_type', 'user', '=')
+        ->condition('entity_id', $record['uid'], '=')
+        ->execute();
+      }
+    }
+  }
+}

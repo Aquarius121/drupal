@@ -1,0 +1,342 @@
+<?php
+  define( "SUPPORTGROUPS_LIVE_CACHE_TABLE", "cache");
+  define( "SUPPORTGROUPS_LIVE_CACHE_CID", "supportgroups_live_block");
+  define( "SUPPORTGROUPS_LIVE_CACHE_TTL", "30");
+  define( "SUPPORTGROUPS_ITEM_NUMBER", "5");
+
+
+  /**
+  *  This function creates the path for the ajax callout
+  */
+  function supportgroups_live_menu(){
+    $items = array();
+    // Ajax call out to loadmore/activity will run the supportgroups_live_ajax function
+      $items['ajax/loadmoreactivity'] = array(
+      'title' => 'Support Groups Activity',
+      'page callback' => 'supportgroups_live_ajax',
+      'access arguments' => array('access supportgroups_live content'),
+      'type' => MENU_CALLBACK
+    );
+    return $items;
+  }
+
+  /**
+  *  This function creates the permission to retrieve the activity items
+  *  by ajax
+  */
+  function supportgroups_live_permission(){
+    return array(
+      'access supportgroups_live content' => array(
+        'title' => t('Access SupportGroups Live Content'),
+        'description' => t('Access Live Content'),
+      )
+    );
+  }
+
+
+  /**
+  *  This function is creating the info for the block
+  *
+  */
+  function supportgroups_live_block_info(){
+    $blocks = array();
+    $blocks['supportgroups_live'] = array(
+      'info' => t('Support Groups Live Block'),
+      'cache' => DRUPAL_NO_CACHE,
+    );
+    return $blocks;
+  }
+
+  /**
+  *  This function is needed to show the display of the block
+  */
+  function supportgroups_live_block_view( $delta = '' ){
+    $blocks = array();
+    switch( $delta ){
+      case 'supportgroups_live':
+        // supportgroups_live_content() Will return the entire output of the block
+        $blocks['content'] = supportgroups_live_content();
+        break;
+    }
+    return $blocks;
+  }
+
+  /**
+  *  This function check to see if the block is stored in cache, if not, then we will
+  *  call the supportgroups_live_create_block() function to create it
+  */
+  function supportgroups_live_content(){
+    //  Check to see if the supportgroups live block is stored in cache
+    //$cached = cache_get( SUPPORTGROUPS_LIVE_CACHE_CID, SUPPORTGROUPS_LIVE_CACHE_TABLE );
+    if( $cached ){
+      // Return the cached version of the support groups live block
+      $content = $cached->data;
+    }
+    else{
+      // If not cache, then create the supportgroups live block
+      $content =  supportgroups_live_create_block();
+      // Set the cache
+      cache_set(SUPPORTGROUPS_LIVE_CACHE_CID, $content, SUPPORTGROUPS_LIVE_CACHE_TABLE, strtotime("+".SUPPORTGROUPS_LIVE_CACHE_TTL." seconds") );
+    }
+    return $content;
+  }
+
+  /**
+  *  This function will pull in data for the latest discussion, comments, and groups joined activity
+  */
+  function supportgroups_live_create_block(){
+      // This function will return an array that stores the most recent discussions
+      $discussions = supportgroups_live_get_recent_discussions();
+      // This function will return an array that stores the most recent comments
+
+      $comments = supportgroups_live_get_recent_comments();
+      // This function will return an array that stores the most recent activities of groups joined
+      $groups = supportgroups_live_get_recent_group_joined();
+      // This function will return $groups, $comments, and $discussion in one array that
+      // is sorted by timestamp
+
+      // Returns an array of all items sorted by timestamp
+      $recentActivity = sort_live_feed_by_timestamp( $discussions, $comments, $groups);
+      // This function will theme all rows
+      $content = supportgroups_theme_rows( $recentActivity);
+
+      // Theme supportgroups live block
+      return theme('supportgroupslive', array( 'supportgroupslive' => $content ));
+  }
+
+  /**
+  *  This function will create the theme templates
+  */
+  function supportgroups_live_theme(){
+    return array(
+      // theme for the main block
+      'supportgroupslive' => array('arguments' => array( 'supportgroupslive' => NULL), 'template' => 'templates/supportgroupslive'),
+      // theme for the discussion activity
+      'supportgroupslivenode' => array(
+        'arguments' => array(
+          'title' => NULL,
+          'username' => NULL
+         ), 'template' => 'templates/supportgroupslivenode'),
+      // theme for the comment activity
+      'supportgroupslivecomment' => array(
+        'arguments' => array(
+          'title' => NULL,
+          'username' => NULL
+         ), 'template' => 'templates/supportgroupslivecomment'),
+      // theme for the group activity
+      'supportgroupslivegroup' => array(
+        'arguments' => array(
+          'title' => NULL,
+          'username' => NULL
+         ), 'template' => '/templates/supportgroupslivegroup')
+    );
+  }
+
+	function supportgroups_live_preprocess_supportgroupslive(&$var) {
+		drupal_add_css(  drupal_get_path('module', 'supportgroups_live').'/css/sglive.css' );
+        drupal_add_js(drupal_get_path('module', 'supportgroups_live').'/js/supportgroups_live.js');
+        $settings['supportgroups_live'] = array(
+          'loadmore' => array(
+            'running' => 0 // set default mark to see if the interval is running
+          ),
+        );
+        drupal_add_js( $settings, 'settings');    
+	}
+
+  /********************* Block Creation Helper Functions **************************/
+  /**
+  *  This function will query the database for the most recent discussion
+  */
+  function supportgroups_live_get_recent_discussions(){
+    $discussions = array();
+    // This is needed to reduce the time to call the query
+    // I'm not sure if this matters, from my experience
+    // This helped reduce the call to this query
+    $time = time() - strtotime("-1 month");
+    $results = db_query("SELECT title, uid, nid, created FROM {node}
+      WHERE created > :time AND status = 1
+      ORDER BY created DESC LIMIT 5", array( ':time' => $time ));
+    // Loop through each row and add the discussion info to the $discussion array
+    foreach( $results as $row){
+      $discussions[] = array(
+        'type' => 'discussions',
+        'title' => $row->title,
+        'uid' => $row->uid,
+        'nid' => $row->nid,
+        'created' => $row->created
+        );
+    }
+    return $discussions;
+  }
+
+  /**
+  *  This function will query the database for the most recent comments
+  */
+  function supportgroups_live_get_recent_comments(){
+    $comments = array();
+    // This is needed to reduce the time to call the query
+    // I'm not sure if this matters, from my experience
+    // This helped reduce the call to this query
+    $time = time() - strtotime("-1 month");
+    $results = db_query("SELECT nid, uid, cid, created FROM {comment}
+      WHERE created > :time AND status = 1
+      ORDER BY created DESC LIMIT 5", array( ':time' => $time ));
+    // Loop through each row and add the comment info to the $comments array
+    foreach( $results as $row){
+      $comments[] = array(
+        'type' => 'comments',
+        'cid' => $row->cid,
+        'uid' => $row->uid,
+        'nid' => $row->nid,
+        'created' => $row->created
+        );
+    }
+    return $comments;
+  }
+
+  /**
+  *  This function will query the database for users who joined a group
+  */
+  function supportgroups_live_get_recent_group_joined(){
+    $groups = array();
+    // This is needed to reduce the time to call the query
+    // I'm not sure if this matters, from my experience
+    // This helped reduce the call to this query
+    $time = time() - strtotime("-1 month");
+    $results = db_query("SELECT etid, gid, created FROM {og_membership}
+      WHERE created > :time AND entity_type = 'user'
+      ORDER BY created DESC LIMIT 5", array( ':time' => $time ));
+    // Loop through each row and add the group info to the $groups array
+    foreach( $results as $row){
+      $groups[] = array(
+        'type' => 'groups',
+        'uid' => $row->etid,
+        'nid' => $row->gid,
+        'created' => $row->created
+        );
+    }
+    return $groups;
+  }
+
+  /**
+  *  This function will sort all arrays by timestamp.  We will return one array that contains all
+  *  items that is sorted by timestamp
+  */
+  function sort_live_feed_by_timestamp( $discussions, $comments, $groups ){
+    // Create an array that will store all items
+    $live_feed_items = array();
+    // Loop through the discussion array and add to the live_feed_item array
+    foreach( $discussions as $row=>$value){
+      $live_feed_items[] = $value;
+    }
+    // Loop through the comments array and add to the live_feed_item array
+    foreach( $comments as $row=>$value){
+      $live_feed_items[] = $value;
+    }
+    // Loop through the groups array and add to the live_feed_item array
+    foreach( $groups as $row=>$value){
+      $live_feed_items[] = $value;
+    }
+    // Sort array by created
+    uasort( $live_feed_items, 'sort_timestamp_helper');
+    return $live_feed_items;
+  }
+
+  /**
+  *  This function will compare arrays and sort by timestamp. Required by usort()
+  *
+  */
+  function sort_timestamp_helper($a, $b){
+    if( $a['created'] == $b['created'] ){
+      return 0;
+    }
+    return ( $a['created'] < $b['created'] ) ? 1 : -1;
+  }
+
+  /**
+  *  This function will theme each row
+  */
+  function supportgroups_theme_rows( $recentActivity){
+    $content = '';
+    $counter = 1;
+    // Loop through $recentActivity.  If the activity is a node, then use the supportgroupslivenode theme
+    // The comments and groups activity will have different themes as well
+    foreach( $recentActivity as $row=>$value){
+      $username = "";
+      $title = "";
+      // Retrieve username of the user
+      $username = get_username_by_uid( $value['uid']);
+      // Retrieve title of node
+      $title = get_title_by_nid( $value['nid']);
+      $current_user = user_load($value['uid']);
+      if( module_exists( 'supportgroups_utility')){
+        $image = supportgroups_utility_profile_image($current_user, '35x35');
+      }
+
+
+      // Check to see if this activity is a discussion
+      if( $value['type'] == 'discussions'){
+        // call the theme function for the discussion activity
+        $content .= theme( 'supportgroupslivenode' , array('title'=> $title, 'username' => $username, 'image'=> $image) );
+      }
+      // Check to see if the activity is a comment
+      else if( $value['type'] == 'comments'){
+        // call the theme function for the comment activity
+        $content .= theme( 'supportgroupslivecomment' , array('title'=> $title, 'username' => $username, 'image' => $image) );
+      }
+      // Check to see if this activity is a group
+      else if( $value['type'] == 'groups'){
+        // call the theme function for this group activity
+        $content .= theme( 'supportgroupslivegroup' , array('title'=> $title, 'username' => $username, 'image' => $image) );
+      }
+      // Stop loop once we get the number activities to show
+      if( $counter == (SUPPORTGROUPS_ITEM_NUMBER) ){
+        break;
+      }
+      $counter++;
+    }
+    return $content;
+  }
+
+  /**
+  *  This is a helper function to return the username base on the uid
+  */
+  function get_username_by_uid( $uid ){
+    $username = '';
+    // Get the name of the user
+    $result_uid = db_query("SELECT name FROM drup_users WHERE uid = :uid", array( ':uid' => $uid) );
+    foreach( $result_uid as $row){
+      $username = $row->name;
+      break;
+    }
+    $username = "<a class='liveuser' href=".url( 'user/'.$uid, array('absolute' => TRUE) ).">".$username."</a>";
+    return $username;
+  }
+
+  /**
+  *  This is a helper function to return the title base on the nid
+  */
+  function get_title_by_nid( $nid ){
+    $title = '';
+    // Get the title of the node
+    $result_nid = db_query("SELECT title FROM drup_node WHERE nid = :nid", array( ':nid' => $nid) );
+    foreach( $result_nid as $row){
+      $title = $row->title;
+      break;
+    }
+    // Add a link to the title
+    $title = "<a class='livetitle' href=".url( 'node/'.$nid, array('absolute' => TRUE) ).">".$title."</a>";
+    return $title;
+  }
+
+  /**
+  *  This function returns a json response for the recent activity feed block
+  */
+  function supportgroups_live_ajax(){
+    $post = array();
+    // supportgroups_live_content will return the live feed block
+    $content = supportgroups_live_content();
+    $post[] = $content;
+    // return a json response for the live feed block
+    return drupal_json_output(array('liveactivity'=>$post));
+  }

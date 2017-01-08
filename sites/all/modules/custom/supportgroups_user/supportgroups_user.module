@@ -1,0 +1,1047 @@
+<?php
+
+include_once 'supportgroups_user.features.inc';
+
+define('SUPPORTGROUPS_USER_MODULE_WEB_PATH', drupal_get_path('module', 'supportgroups_user'));
+define('SUPPORTGROUPS_USER_MAX_SUPPORTS_PER_DAY', variable_get('supportgroups_user_max_supports_per_day', 100));
+
+//$rtid of supports relationship
+define('SUPPORTGROUPS_USER_SUPPORT_RELATIONSHIP_ID', 1);
+
+/**
+ * Implements hook_menu
+ */
+function supportgroups_user_menu() {
+  $items['welcome'] = array(
+      'access callback' => TRUE,
+      'title' => 'Welcome to Supportgroups',
+      'page callback' => 'supportgroup_user_welcome_page',
+      'type' => MENU_CALLBACK
+  );
+  $items['supportgroups/user/check-username'] = array(
+    'page callback' => 'supportgroups_user_check_username',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  $items['supportgroups/user/check-email'] = array(
+    'page callback' => 'supportgroups_user_check_email',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/password/status'] = array(
+    'page callback' => 'supportgroups_user_password_status',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/%user/changepassword'] = array(
+    'title' => 'New Password',
+    'page callback' => 'supportgroups_user_change_password',
+    'page arguments' => array(1),
+    'access callback' => TRUE,
+    'access arguments' => array(1),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['user/welcome'] = array(
+    'title' => 'Welcome',
+    'page callback' => 'supportgroups_user_welcome_page',
+    'access callback' => 'user_is_logged_in',
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'supportgroups_user.pages.inc'
+  );
+  $items['franky/test'] = array(
+    'page callback' => 'supportgroups_comment_notification',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  
+  return $items;
+}
+
+function supportgroups_spam_bot_check() {
+  $result = db_query("SELECT * FROM spam_list order by uid asc");
+  $params = array(
+    'subject' => "Possible Spam",
+    'body' => "",
+  );
+  $uid = 0;
+  $bodystr = "";
+  foreach( $result as $row){
+    if($uid != $row->uid){
+      if($uid != 0){
+        $params['body'] = $bodystr;
+        drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);
+      }
+      $bodystr = "Possible Spam detected: <br><br> <a href='http://www.supportgroups.com/user/".$row->uid."'>user link</a>";
+      $bodystr .= "<br> <a href='http://www.supportgroups.com/node/".$row->nid."'>link here</a>";
+    } else {
+      $bodystr .= "<br> <a href='http://www.supportgroups.com/node/".$row->nid."'>link here</a>";
+    }
+    $uid = $row->uid;
+  }
+  if($bodystr != ""){
+    $params['body'] = $bodystr;
+    drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);    
+  }
+  db_query("DELETE FROM spam_list where 1");
+}
+/*
+ * Implementation of hook access
+ * There is no hook_access ! What is this doing?
+ * This function will check to see if the user can access this page. The user can only edit their own profile. Admin users can see all pages.
+ */
+function supportgroups_user_access($account){
+  return (($GLOBALS['user']->uid == $account->uid) || user_access('administer users')) && $account->uid > 0;
+}
+
+/**
+ * Implementation of hook_menu_alter
+ * Add additional security in front of requesting user relationships
+ * @param Array $items
+ */
+function supportgroups_user_menu_alter(&$items) {
+  $items['relationship/%user/request']['access callback'] = '_supportgroups_user_request_relationship_allowed';
+  // Override me module overrides
+  $items['relationship/%user/request']['page callback'] = 'user_relationships_ui_request_ajax';
+  $items['relationship/%user/request']['page arguments'] = array(1);
+  $items['toboggan/revalidate/%user']['access callback'] = 'supportgroups_user_free_access';
+  $items['toboggan/revalidate/%user']['page callback'] = 'supportgroups_user_logintoboggan_resend_validation';
+  $items['toboggan/revalidate/%user']['file path'] = drupal_get_path('module', 'supportgroups_user');
+  $items['toboggan/revalidate/%user']['file'] = 'supportgroups_user.pages.inc';
+//  $items['user/reset/%/%/%']['page callback'] = 'supportgroups_user_auto_login';
+//  $items['user/reset/%/%/%']['page arguments'] = array(2,3,4);
+//  $items['user/reset/%/%/%']['file path'] = drupal_get_path('module', 'supportgroups_user');
+//  $items['user/reset/%/%/%']['file'] = 'supportgroups_user.pages.inc';
+}
+
+/**
+ * Access callback to validate login
+ * @return bool
+ */
+function supportgroups_user_free_access() {
+  return TRUE;
+}
+
+
+/**
+ * Implementation of Elysia Cron module's hook_cronapi
+ */
+function supportgroups_user_cronapi($op, $job = NULL) {
+  $items = array();
+
+  $items['supportgroups_user_expire_daily_support_counts'] = array(
+      'description' => 'Delete daily support counts',
+      'rule' => '7 1 * * *', // Every day at 1:07
+  );
+
+  $items['supportgroups_spam_bot_check'] = array(
+      'description' => 'Send spam abuse email daily',
+      'rule' => '7 2 * * *', // Every day at 2:07
+  );
+
+  $items['supportgroups_comment_notification'] = array(
+      'description' => 'Send comment notification',
+      'rule' => '0 */4 * * *', // Every 4 hour
+  );
+  return $items;
+}
+
+/**
+ * Send comment notifications
+ */
+
+function supportgroups_comment_notification(){
+  $result = db_query("SELECT * FROM comment_notify_cron where 1")->fetchAssoc();
+  
+  $run_count = intval($result["count"]);
+  $run_count++;
+  db_query("UPDATE comment_notify_cron set count = {$run_count} where id = 1");
+  
+  $now = intval(date('H'));
+  $hArr = array(0=>24, 1=> 12, 2=> 8, 3=> 4);
+  $opt = array();
+  array_push($opt, 3);
+
+  if($run_count % 2 == 0)
+    array_push($opt, 2);
+  
+  if($run_count % 3 == 0)
+    array_push($opt, 1);
+  
+  if($run_count % 6 == 0)
+    array_push($opt, 0);
+
+  $opt_str = implode(",", $opt);
+  $result = db_query("SELECT * FROM comment_notify_pending where opt in ({$opt_str}) order by tom, sub, body");
+
+  
+  $to = "";
+  $subject = "";
+  $checkstr = "";
+  $mailstr = "";
+  $footer = "";
+  foreach( $result as $row){
+    $bodys = explode(" ", $row->body);
+
+    if($checkstr == $bodys[0])
+      continue;
+    if($to != $row->tom){
+      $mailstr .= "---".$footer;
+      if($to != ""){
+        $params['subject'] = "Comment Notification on your posts and comments";
+        $params['body'] = '<div style="width: 100%;text-align: center;font-family: sans-serif;"> <a href="www.supportgroups.com" style="color: white;text-decoration: none;font-size: 80px;background: green;padding: 30px;"><b>+support</b>groups</a></div><br><br>'.$mailstr; 
+        //drupal_mail('comment_notify', 'comment_notify_mail', $to, language_default(), $params);
+        drupal_mail('supportgroups_node', 'notice', $to, language_default(), $params);
+        //drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);
+      }
+      $mailstr = $row->head."<br>";
+      $mailstr .= 'Here are your Support updates from the last ' . $hArr[$row->opt] . ' hours:<br><br>';
+      $mailstr .= '<b style="color:#239948">' . $row->sub . "</b><br>";
+      $mailstr .= $row->body;
+    } else {
+      if($subject != $row->sub){
+        $mailstr .= '<b style="color:#239948">' . $row->sub . "</b><br>";
+        $mailstr .= $row->body;
+      } else {
+        $mailstr .= $row->body;
+      }
+    }
+    $subject = $row->sub;
+    $to = $row->tom;
+    $checkstr = $bodys[0];
+    $footer = $row->footer;
+  }
+  if($mailstr != ""){
+    $mailstr .= "---".$footer;
+    if($to != ""){
+      $params['subject'] = "Comment Notification on your posts and comments";
+      $params['body'] = '<div style="width: 100%;text-align: center;font-family: sans-serif;"> <a href="www.supportgroups.com" style="color: white;text-decoration: none;font-size: 80px;background: green;padding: 30px;"><b>+support</b>groups</a></div><br><br>'.$mailstr; 
+      //drupal_mail('comment_notify', 'comment_notify_mail', $to, language_default(), $params);
+      drupal_mail('supportgroups_node', 'notice', $to, language_default(), $params);
+     
+    }
+  }
+  db_query("DELETE FROM comment_notify_pending where opt in ({$opt_str})");
+  
+}
+
+/**
+ * Remove the daily support counts
+ */
+function supportgroups_user_expire_daily_support_counts() {
+  $client = _supportgroups_feed_get_cache_client();
+  // use a wildcard for the cid so that all such content will be removed
+  $client->del($client->keys(_supportgroups_user_num_supports_count_cid('*')));
+}
+
+/**
+ * Helper function to enable/disable throttling on relationship requests
+ *
+ * $request_type is inherited from the hook_menu implementation of 'relationship/%user/request' that we override in hook_menu_alter
+ * -- this is set to 'request' because that is what is passed when requesting a user relationship, and we need to call this function
+ * outside the context of the menu_callback to determine if/whether to show the follow me link
+ * @see get_support_relationship_button() in supportgroups_utility.module
+ * @see views-view-field--profile-other--block--status-link.tpl.php
+ * @see views-view-field--supportlist--page--status-link.tpl.php
+ * @see views-view-field--supportlist--page-1--status-link.tpl.php
+ *
+ * @param String $request_type
+ * @return boolean
+ */
+function _supportgroups_user_request_relationship_allowed($request_type = 'request') {
+  global $user;
+
+  $client = _supportgroups_feed_get_cache_client();
+  // if the user has supported more than the max number of allowed supports in the given day, then we block here
+  if ($client->get(_supportgroups_user_num_supports_count_cid($user->uid)) <= SUPPORTGROUPS_USER_MAX_SUPPORTS_PER_DAY) {
+    // if the user is under the limit then we pass through to the user_relationships module's default
+    return user_relationships_ui_check_access($request_type);
+  }
+  else {
+    return FALSE;
+  }
+
+}
+
+/**
+ * Implementation of hook_user_relationships_insert
+ * Increment count of number of users followed
+ */
+function supportgroups_user_user_relationships_save($relationship) {
+  global $user;
+
+  // we only want to log the person making the support request so make sure the relationship ID is correct
+  // and that this logic stays correct even if "supports" starts doing automatic reciprocal relationships
+  if (($relationship->rtid == SUPPORTGROUPS_USER_SUPPORT_RELATIONSHIP_ID) && ($user->uid == $relationship->requester_id)) {
+    $client = _supportgroups_feed_get_cache_client();
+    $client->incr(_supportgroups_user_num_supports_count_cid($relationship->requester_id));
+  }
+}
+
+/**
+ * Helper function to retrieve Cid for the number of daily supports a given user ID has logged
+ * @param Int $uid
+ * @return string
+ */
+function _supportgroups_user_num_supports_count_cid($uid) {
+  return 'sg-user-supports-count-'. $uid;
+}
+
+/**
+ *  This function will alter the user registration and login forms
+ */
+function supportgroups_user_form_alter(&$form, &$form_state, $form_id){
+
+  switch($form_id) {
+    case 'user_register_form':
+      // running context check and setting markup
+      if( drupal_is_front_page() || arg(0) == 'welcome' ){
+        // add prefix and suffix for page styling
+        $form['#prefix'] = '<div id="user-register-form-wrapper">';
+        $form['#suffix'] = '</div>';
+        $header_markup = "<h2 class='register-header-sidebar'>Find comfort and strength at SupportGroups</h2>";
+        $description_markup = "<div class='register-desc'>All you need to join is an email, user name, and password</div>";
+        $second_page_markup = "<div class='register-thank-you'>Thank you for signing up! <span>Now, join some groups to personalize your experience</span></div>";
+      } else{
+        $header_markup = "<h2 class='register-header-popup'>Welcome to SupportGroups! Join now for free.</h2>";
+        $description_markup = '<div class="register-desc">Choose Name & Password</div>';
+        $second_page_markup = '<div class="register-thank-you"><span>To personalize your Support Feed and get the most out of your community, please join some Support Groups.</span>Remember: you must click "Save" to complete registration.</div>';
+      }
+
+      $form['#attached']['js'] = array(
+          SUPPORTGROUPS_USER_MODULE_WEB_PATH . '/js/register.js',
+          SUPPORTGROUPS_USER_MODULE_WEB_PATH . '/js/jquery.validate.min.js',
+      );
+
+      // if we are on a group page then set the gid in the DOM
+      $menu = menu_get_object();
+      if(is_object($menu) && $menu->type == 'set_up_group') {
+        $form['#attached']['js'][] = array(
+          'data' => array(
+            'supportgroups_user' => array(
+              'register' => array(
+                'gid' => $menu->nid,
+              ),
+            ),
+          ),
+          'type' => 'setting',
+        );
+      }
+
+      $form['#attached']['css'] = array(
+          SUPPORTGROUPS_USER_MODULE_WEB_PATH . '/css/register.css',
+      );
+
+      // hide mailchimp newsletter and set default
+      $form['mailchimp_lists']['#access'] = FALSE;
+      $form['mailchimp_lists']['mailchimp_SG Users']['subscribe']['#default_value'] = TRUE;
+
+      // Remove form descriptions
+      $form['account']['name']['#title'] = '';
+      $form['account']['name']['#description'] = '';
+      $form['account']['mail']['#title'] = '';
+      $form['account']['mail']['#description'] = '';
+      $form['account']['pass']['#title'] = '';
+      $form['account']['pass']['#description'] = '';
+
+      // Add placeholders
+      $form['account']['name']['#attributes'] = array('placeholder' => t('Username'));
+      $form['account']['mail']['#attributes'] = array('placeholder' => t('Email'));
+
+      // if we aren't on front page, add the close button
+      if(!drupal_is_front_page() && arg(0) != 'welcome' ){
+        $form['close_button'] = array(
+          '#markup' => '<div class="close-button" id="close-button"></div>',
+          '#weight' => -80,
+        );
+      }
+
+      // Add div tags for entire form
+      $form['steps_wrapper_open'] = array(
+        '#markup' => "<div class='steps-wrapper'>",
+        '#weight' => -70
+      );
+
+      $form['steps_wrapper_step_one_open'] = array(
+        '#markup' => "<div class='step step-1' id='step-1'>",
+        '#weight' => -60
+      );
+
+      // Add header for the registration block
+      $form['header'] = array(
+        '#markup' => $header_markup,
+        '#weight' => -50
+      );
+
+      // Add description for the registration block
+      $form['description'] = array(
+        '#markup' => $description_markup,
+        '#weight' => -45
+      );
+
+      // Add div wrapper for left column of account fields and move fields by weight
+      $form['account']['account_fields_left_column_open'] = array(
+        '#markup' => "<div class='account-fields-left-column'>",
+        '#weight' => -15
+      );
+
+      $form['account']['name']['#weight'] = -14;
+      $form['account']['mail']['#weight'] = -13;
+
+      $form['account']['account_fields_left_column_close'] = array(
+          '#markup' => "</div>",
+          '#weight' => -12
+      );
+
+      // Add div wrapper for right column of account fields and move fields by weight
+      $form['account']['account_fields_right_column_open'] = array(
+        '#markup' => "<div class='account-fields-right-column'>",
+        '#weight' => -11
+      );
+
+      // Wrap the password field
+      $form['account']['pass']['#weight'] = -10;
+
+      $form['account']['account_fields_right_column_close'] = array(
+          '#markup' => "</div>",
+          '#weight' => -9
+      );
+
+      // Add description for the registration block
+      global $base_url;
+//      $form['terms'] = array(
+//        '#markup' => "<div class='register-term'>By registering, you agree to our <a href='".$base_url."/content/legal-statement'>Terms of Use</a> and <a href='".$base_url."/content/privacy-policy'>Privacy Policy</a>, and you confirm that you are 13+ years of age</div>",
+//        '#weight' => 9
+//      );
+
+      // Add first submit button. This will lead to the second page ( groups page)
+      $form['register_button'] = array(
+        '#markup' => "<a class='button green' href='#' id='register-button' >Register</a>",
+        '#weight' => 10
+      );
+
+      // Add div tags for entire form
+      $form['steps_wrapper_step_one_close'] = array(
+        '#markup' => "</div>",
+        '#weight' => 11
+      );
+
+      $form['steps_wrapper_step_two_open'] = array(
+        '#markup' => "<div class='step step-2' id='step-2'>",
+        '#weight' => 12
+      );
+
+      $form['register_thank_you'] = array(
+          '#markup' => $second_page_markup,
+          '#weight' => 13
+      );
+
+      // Group list text
+      $form['select_a_group_help'] = array(
+          '#markup' => "<div class='select-a-group-help'>Select as many as you like</div>",
+          '#weight' => 14
+      );
+
+      // get groups by id => name
+      $groups = supportgroups_feed_get_group_names();
+
+      // sort groups
+      asort($groups);
+
+      foreach($groups as $gid => $name) {
+        $options[$gid] = theme('registergroups', array('gid' => $gid, 'title' => $name));
+      }
+
+      // This will add the registration form  on the user registration page
+      $form['og_register'] = array('#weight' => 15);
+      $form['og_register']['og_register'] = array(
+          '#type' => 'checkboxes',
+          '#title' => t(''),
+          '#prefix' => "<div class='select-a-group'>",
+          '#suffix' => '</div>',
+          '#options' => $options,
+      );
+
+      // Change form submit value and weight
+      $form['actions']['submit']['#value'] = 'Save';
+      $form['actions']['#weight'] = 20;
+
+      $form['steps_wrapper_step_two_close'] = array(
+        '#markup' => "</div>",
+        '#weight' => 30
+      );
+
+      $form['steps_wrapper_close'] = array(
+        '#markup' => "</div>",
+        '#weight' => 40
+      );
+
+      // Fields for registering and creating a node
+      $form['node_body'] = array(
+          '#type' => 'hidden',
+      );
+      // Fields for registering and creating a node
+      $form['node_gid'] = array(
+        '#type' => 'hidden',
+      );
+
+      // Fields for registering and creating a comment
+      $form['comment_body'] = array(
+          '#type' => 'hidden',
+      );
+      $form['comment_nid'] = array(
+          '#type' => 'hidden',
+      );
+      $form['comment_pid'] = array(
+          '#type' => 'hidden',
+      );
+
+      // Fields for registering and liking something
+      $form['like_value'] = array(
+          '#type' => 'hidden',
+      );
+      $form['like_type'] = array(
+          '#type' => 'hidden',
+      );
+
+      // make sure a group is chosen
+      $form['#validate'][] = 'supportgroups_user_register_validate';
+      // check to see if we have to create a node, comment , or a like
+      $form['#submit'][] = 'supportgroups_user_register_submit';
+
+      break;
+
+    case 'user_login':
+      // remove title
+      $form['name']['#title'] = '';
+      $form['pass']['#title'] = '';
+      $form['name']['#description'] = '';
+      $form['pass']['#description'] = '';
+      // Add placeholders
+      $form['name']['#attributes'] = array('placeholder' => t('Username'));
+      $form['pass']['#attributes'] = array('placeholder' => t('Password'));
+
+      // Change Submit button text
+      $form['actions']['submit']['#value'] = t('Login');
+      break;
+
+    case 'user_login_block':
+      if (drupal_is_front_page()) {
+        $form = drupal_get_form('user_login');
+        $form['name']['#size'] = 15;
+        $form['pass']['#size'] = 15;
+      }
+      // remove title
+      $form['name']['#title'] = '';
+      $form['pass']['#title'] = '';
+      // Add placeholders
+      $form['name']['#attributes'] = array('placeholder' => t('Username'));
+      $form['pass']['#attributes'] = array('placeholder' => t('Password'));
+
+      $form['login_close'] = array(
+        '#markup' => "<span id='login-close' class='login-close'>X</span>",
+        '#weight' => 80
+      );
+
+      // Change Submit button text
+      $form['actions']['submit']['#value'] = t('Login');
+			$form['actions']['#weight'] = 70;
+
+			// make sure the login action is to www
+			global $base_url;
+      if($_SERVER['HTTP_HOST'] != str_replace(SG_HTTP_PROTOCOL, '', $base_url)) {
+        $form['#action'] = $base_url;
+      }
+      break;
+
+    case 'user_pass':
+      $form['#submit'][] = 'supportgroups_user_password_submit';
+      break;
+
+    case 'logintoboggan_main_settings':
+
+      $form['registration']['logintoboggan_purge_unvalidated_user_interval']['#attributes']['disabled'] = 'disabled';
+      $form['registration']['logintoboggan_purge_unvalidated_user_interval']['#description'] .= ' <br /><b>Because the
+      non-authenticated role was originally set as authenticated and since changed,
+      then this setting is disabled to prevent deletion of users.</b>';
+      break;
+  }
+}
+
+
+/**
+ * This function will redirect the user to a new password reset page
+ */
+function supportgroups_user_password_submit( $form, &$form_state){
+	drupal_get_messages();
+  $form_state['redirect'] = 'user/password/status';
+	drupal_set_message(t('Further instructions have been sent to your e-mail address.'),'newpass');
+  return;
+}
+
+/**
+ * Page for the password status
+ */
+function supportgroups_user_password_status(){
+  return '<div></div>';
+}
+
+/**
+ *  This function will validate the user registration form
+ */
+function supportgroups_user_register_validate($form, &$form_state){
+  $pickGroup = FALSE;
+  //Check to make sure that at least one group is chosen
+  if( !$pickGroup ){
+    foreach( $form_state['values']['og_register'] as $key=>$value ){
+      if( $value != 0){
+        $pickGroup = TRUE;
+        break;
+      }
+    }
+  }
+  // Return an error if no group is chosen
+  if( !$pickGroup){
+    form_set_error('og_register', 'Please select a group to continue.');
+  }
+}
+
+
+/**
+ *  This function will check to see if there are any nodes
+ *  comments or likes created during the registration process
+ */
+function supportgroups_user_register_submit(&$form, &$form_state){
+  // Replace logintoboggan message
+  //watchdog('sg', '<pre>' . print_r($form_state['values'],1));
+  $uid = $form_state['values']['uid'];
+  $replace_message = t('A validation e-mail has been sent to your e-mail address. You will need to follow the instructions in that message in order to gain full access to the site.');
+  $replace_message2 = t('A welcome message with further instructions has been sent to your e-mail address.');
+  // This call will get all messages and clear them from $_SESSION
+  $messages = drupal_get_messages('status');
+  foreach ($messages['status'] as $message) {
+    if (substr($message,0,30) == 'You have updated your settings') {
+      continue;
+    }
+    if ($message == $replace_message2) {
+      continue;
+    }
+    if ($message == $replace_message) {
+      drupal_set_message(t('Congratulations! You are now part of the SupportGroups.com community,
+      in order to continue please check your e-mail!  If you do not receive your e-mail,
+      first check in your spam folder and if still not there
+      please click !here to resend OR email us at info@supportgroups.com', array('!here' => l('HERE',
+        'toboggan/revalidate/' . $uid))));
+
+//      please click !here to resend OR email us at info@supportgroups.com', array('!here' => l('HERE',
+//        'toboggan/revalidate/' . $uid))));
+    }
+    else {
+      drupal_set_message($message);
+    }
+  }
+  // Check to see if a node was created
+  // July 22 2016 no longer allowing instant nodes
+  return;
+  if(!empty($form_state['values']['node_body']) && !empty($form_state['values']['node_gid'])){
+    supportgroups_user_create_discussion($form_state['values']['node_body'], $form_state['values']['node_gid'] );
+  }
+  // Check to see if a comment was created
+  elseif(!empty($form_state['values']['comment_body']) && !empty($form_state['values']['comment_nid'])){
+    supportgroups_user_create_comment($form_state['values']['comment_body'], $form_state['values']['comment_nid'], $form_state['values']['comment_pid']);
+  }
+}
+
+function supportgroups_user_mail_tokens(&$replacements, $data, $options) {
+  if (isset($data['user'])) {
+    $replacements['[user:first-time-login-url]'] = supportgroups_user_first_time_login($data['user']);
+  }
+}
+
+function supportgroups_user_first_time_login($account) {
+  $timestamp = REQUEST_TIME;
+  return url("supportgroups/user/login/$account->uid/$timestamp/" . user_pass_rehash($account->pass, $timestamp,
+      $account->login, $account->uid), array('absolute' => TRUE));
+}
+
+/**
+ *  This function will create the node
+ * Shouldn't this be in sg_node module?
+ */
+function supportgroups_user_create_discussion($body, $gid){
+  global $user;
+
+  // Don't allow discussion if no permissions
+  if (!user_access('create group_post content')) {
+    return;
+  }
+  // We need to strip all tags form submission as it might not be
+  $body = trim(strip_tags($body));
+
+  $node_title = '';
+  // We will create the title.
+
+  // If it's larger than 60 characters, then we will add ...
+  if(strlen($body) <= 60 ){
+    $node_title = $body;
+  } else {
+    $node_title = substr($body, 0, 60);
+    $node_array = explode(' ', $node_title);
+    for($i=0; $i < count($node_array)-1; $i++){
+      $node_title .= $node_array[$i]." ";
+    }
+  }
+
+  // create object and add type
+  $node = new stdClass();
+  $node->type = 'group_post';
+
+  // get default node built with created and uid
+  node_object_prepare($node);
+
+  $node->title = $node_title;
+  $node->status = 1;
+  $node->language = LANGUAGE_NONE;
+
+  $node->body['und'][0]['value'] = $body;
+  $node->body['und'][0]['format'] = 1;
+
+  $node->path['pathauto'] = TRUE;
+
+  // set the group cck field
+  $node->og_group_ref['und'][0]['target_id'] = $gid;
+
+  // finally save the node
+  node_save($node);
+}
+
+/**
+ *  This function will create the comment
+ */
+function supportgroups_user_create_comment($body, $nid, $pid = 0){
+  global $user;
+
+  // Prevent comment posting if not authenticated
+  if (!user_access('post comments')) {
+    return;
+  }
+  // filter the body and create the subject
+  $body = trim(strip_tags($body));
+
+  // create empty subject
+  $subject = '';
+  if(strlen($body) <= 60 ){
+    $subject = $body;
+  } else {
+    $body_60 = substr($body, 0, 60);
+    $node_array = explode(' ',$body_60);
+    for($i=0; $i < count($node_array)-1; $i++){
+      $subject .= $node_array[$i]." ";
+    }
+  }
+
+  // Create the comment
+  $comment = (object) array(
+    'cid' => 0,
+    'nid' => $nid,
+    'pid' => $pid,
+    'uid' => $user->uid,
+    'mail' => '',
+    'is_anonymous' => 0,
+    'homepage' => '',
+    'status' => COMMENT_PUBLISHED,
+    'subject' => $subject,
+    'language' => LANGUAGE_NONE,
+    'comment_body' => array(
+      LANGUAGE_NONE => array(
+        0 => array (
+          'value' => $body,
+          'format' => 1
+        )
+      )
+    ),
+  );
+
+  comment_submit($comment);
+  comment_save($comment);
+}
+
+/*
+ * Add user to a group after registration
+ */
+function supportgroups_user_user_insert(&$edit, $account, $category){
+  // We will look at all of the chosen values and then
+  // add the user to the corresponding groups
+  foreach($edit['og_register'] AS $key=>$value){
+    if( $value != 0 ){
+      og_group('node', $key, array('entity' => $account->uid));
+    }
+    else{
+      break;
+    }
+  }
+  // Need to create something to create a node
+  // Need to create something to create a comment
+  // Need to create something that will like a comment or node
+}
+
+
+
+
+/**
+ *  This function will create the templates
+ */
+function supportgroups_user_theme(){
+  return array(
+    // template for the groups
+    'registergroups' => array( 'arguments' => array('gid' => NULL,'title' => NULL),
+    'template' => 'templates/registergroups'),
+    'anonymous_discussion' => array(
+    'template' => 'templates/anonymous_discussion' )
+  );
+}
+
+/**
+ *  This function will create the block info
+ */
+function supportgroups_user_block_info(){
+  $blocks = array();
+  // This block will show the registration block
+  $blocks['supportgroups_register'] = array(
+    'info' => t('Support Groups Register Block'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  $blocks['anonymous_discussion_form'] = array(
+    'info' => t('Discussion form for anonymous user'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ *  This function will create the block view
+ */
+function supportgroups_user_block_view( $delta = ''){
+  $blocks = array();
+  switch( $delta ){
+    case 'supportgroups_register':
+      $blocks['content'] = drupal_get_form('user_register_form');
+      break;
+    case 'anonymous_discussion_form':
+      $blocks['content'] = theme('anonymous_discussion');
+      break;
+  }
+  return $blocks;
+}
+
+
+/* disable password strength field copied from password strength disabler module */
+function supportgroups_user_element_info_alter(&$types) {
+  if (isset($types['password_confirm']['#process']) && (($position = array_search('user_form_process_password_confirm', $types['password_confirm']['#process'])) !== FALSE)) {
+    unset($types['password_confirm']['#process'][$position]);
+  }
+}
+
+function supportgroup_user_welcome_page() {
+  global $user;
+  if(!user_is_anonymous()) {
+    drupal_goto('/user');
+  }
+
+  // kill the title
+  drupal_set_title("");
+
+  // get the user register form
+  $form = drupal_get_form('user_register_form');
+
+  return drupal_render($form);
+}
+
+function supportgroups_user_check_username() {
+ // asume there is an error
+  $check = false;
+
+  if(isset($_GET['username'])) {
+    $user = user_load_by_name($_GET['username']);
+    // if a user doesn't existsthen there isn't an error
+    if(!$user) {
+      $check = true;
+    }
+  }
+
+  drupal_json_output($check);
+}
+
+function supportgroups_user_check_email() {
+ // asume there is an error
+  $check = false;
+
+  if(isset($_GET['email'])) {
+   $user = user_load_by_mail($_GET['email']);
+   // if a user doesn't exist then there isn't an error
+   if(!$user) {
+     $check = true;
+   }
+  }
+
+  drupal_json_output($check);
+}
+
+/**
+ *
+ */
+function supportgroups_user_change_password( $account, $category = 'account' ){
+  drupal_add_css(SUPPORTGROUPS_USER_MODULE_WEB_PATH.'/css/supportgroups_changepassword.css');
+  $content = drupal_get_form('supportgroups_user_change_password_form', $account, $category);
+  return $content;
+}
+
+/**
+ *  This is the form to change a user's password
+ */
+function supportgroups_user_change_password_form($form, &$form_state,$account, $category = 'account' ){
+  global $user;
+  if (!isset($form_state['user'])) {
+    $form_state['user'] = $account;
+  }
+  else {
+    $account = $form_state['user'];
+  }
+  $form['#user'] = $account;
+
+
+  $form['account']['pass'] = array(
+    '#type' => 'password_confirm',
+    '#size' => 25,
+    '#weight' => 51,
+    '#description' => t('To change the current user password, enter the new password in both fields.'),
+  );
+
+  // Picture/avatar.
+  $form['picture'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Picture'),
+    '#weight' => -30,
+    '#access' => (!$register && variable_get('user_pictures', 0)),
+  );
+  $form['picture']['picture'] = array(
+    '#type' => 'value',
+    '#value' => isset($account->picture) ? $account->picture : NULL,
+  );
+  $form['picture']['picture_current'] = array(
+    '#markup' => theme('user_picture', array('account' => $account)),
+  );
+  $form['picture']['picture_delete'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Delete picture'),
+    '#access' => !empty($account->picture->fid),
+    '#description' => t('Check this box to delete your current picture.'),
+  );
+  // Adding a link to remove the picture and reload the page
+  $form['picture']['picture_delete_link'] = array(
+    '#access' => !empty($account->picture->fid),
+    '#markup' => "<div class='removepicture'><span id='removepicture' class='graybutton'>Remove Picture</span></div>",
+  );
+
+  $form['picture']['picture_upload'] = array(
+    '#type' => 'file',
+    '#title' => t('Select an image from your computer (4MB max):'),
+    '#size' => 48,
+    '#description' => t(variable_get('user_picture_guidelines')),
+  );
+  $form['#validate'][] = 'user_validate_picture';
+
+  $form['#validate'][] = 'supportgroups_profile_user_profile_form_validate';
+  $form['#submit'][] = 'supportgroups_profile_user_profile_form_submit';
+  $form['#submit'][] = 'supportgroups_user_change_password_submit';
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Change Password'),
+  );
+  return $form;
+}
+
+/**
+ *  Redirect user after the password has been changed
+ */
+function supportgroups_user_change_password_submit( $form, &$form_state){
+  global $user;
+  $form_state['redirect'] = 'user/'.$user->uid;
+  return;
+}
+
+function supportgroups_user_get_notifications_unseen($uid) {
+  $result = db_query("SELECT notifications_unseen, timestamp FROM {supportgroups_user} WHERE uid=:uid",
+    array(':uid' => $uid))->fetchAssoc();
+
+  if (empty($result)) {
+    supportgroups_user_insert_notifications_unseen($uid);
+  }
+  return $result;
+}
+
+/**
+ * Insert for first time
+ * @param $uid
+ */
+function supportgroups_user_insert_notifications_unseen($uid) {
+  $record = array(
+    'uid' => $uid,
+    'timestamp' => time(),
+    'notifications_unseen' => 0
+  );
+  drupal_write_record('supportgroups_user', $record);
+}
+
+/**
+ * Increment or decrement the counter
+ *
+ * @param $uid
+ * @param bool $increment
+ */
+function supportgroups_user_update_notifications_unseen($uid, $increment = TRUE) {
+  if ($increment) {
+    db_query("UPDATE {supportgroups_user} SET notifications_unseen = notifications_unseen+1 WHERE uid=:uid",
+      array(':uid' => $uid));
+  }
+  else {
+    db_query("UPDATE {supportgroups_user} SET notifications_unseen = notifications_unseen-1 WHERE uid=:uid",
+      array(':uid' => $uid));
+  }
+}
+
+function supportgroups_user_author_uid($entity_type, $content_id) {
+  switch ($entity_type) {
+    case 'node':
+      $author_uid = db_query("SELECT uid FROM {node} WHERE nid=:nid", array(':nid' => $content_id))->fetchField(0);
+      break;
+    case 'comment':
+      $author_uid = db_query("SELECT uid FROM {comment} WHERE cid=:cid", array(':cid' => $content_id))->fetchField(0);
+      break;
+  }
+  return $author_uid;
+}
+
+/**
+ * Helper to get the node author
+ * @param $nid
+ * @return mixed
+ */
+function supportgroups_get_node_author($nid) {
+  return db_query("SELECT uid FROM {node} WHERE nid=:nid", array(':nid' => $nid))->fetchField(0);
+}
+
+/**
+ * Helper to get the comment author
+ * @param $nid
+ * @return mixed
+ */
+function supportgroups_get_comment_author($cid) {
+  return db_query("SELECT uid FROM {comment} WHERE cid=:cid", array(':cid' => $cid))->fetchField(0);
+}
+
+function supportgroups_user_reset_notifications_unseen($uid) {
+  db_query("UPDATE {supportgroups_user} SET notifications_unseen = 0 WHERE uid=:uid",
+    array(':uid' => $uid));
+}

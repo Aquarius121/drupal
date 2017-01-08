@@ -1,0 +1,137 @@
+<?php
+/**
+ * @file
+ * Code for the supportgroups_default feature.
+ */
+
+include_once 'supportgroups_default.features.inc';
+
+define('SUPPORTGROUPS_DEFAULT_MODULE_WEB_PATH', drupal_get_path('module', 'supportgroups_default'));
+
+/**
+ * Implements hook_menu().
+ */
+function supportgroups_default_menu() {
+
+  //TODO Leaving group settings as default page for now
+  $items['admin/supportgroups'] = array(
+      'title' => 'Supportgroups Admin',
+      'description' => 'Configure settings supportgorups.',
+      'page callback' => 'supportgroups_default_admin_landing_page',
+      'access arguments' => array('access supportgroups admin'),
+      'type' => MENU_NORMAL_ITEM,
+  );
+
+  // Cron path to directly hit Elysia cron
+  $items['supportgroups/cron'] = array(
+      'title' => 'Supportgroups Cron',
+      'description' => '',
+      'page callback' => 'supportgroups_cron_page',
+      'access callback' => TRUE,
+      'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_theme
+ */
+function supportgroups_default_theme($existing, $type, $theme, $path) {
+  return array(
+    'mobile_popup' => array(
+      'template' => 'templates/mobile-popup',
+    ),
+  );
+}
+
+/**
+ * Implements hook_preprocess_page
+ * @param array $vars
+ */
+function supportgroups_default_preprocess_page(&$vars) {
+  //TODO Add logic to display on pages where needed.
+  //TODO Since this is mainly for the notifications we may want to move this to that block
+  if(arg(0) != 'admin') {
+    drupal_add_js(SUPPORTGROUPS_DEFAULT_MODULE_WEB_PATH . '/js/sg-default-helpers.js');
+  }
+
+  global $user;
+
+  // after updating the user reset the preferences cookie
+  _supportgroups_profile_set_user_preferences_cookie();
+
+  $preferences = _supportgroups_profile_get_user_preferences();
+
+  // Load the current user's uid
+  $settings['supportgroups_default'] = array(
+    'userinfo' => array(
+      'uid' => $user->uid,
+      'running' => 0,
+      'preferences' => $preferences,
+    ),
+  );
+
+  // Load the mobile-popup for all anonymous users.
+  // Supporting js to run browser check for mobile is in the helper js file
+  //TODO We can consider browser checking in php but for now it is better to put load on the client and not the server.
+  if(user_is_anonymous()) {
+    drupal_add_library('system', 'effects.highlight');
+    $vars['mobile_popup'] = theme('mobile_popup');
+  }
+  else {
+    $vars['mobile_popup'] = FALSE;
+  }
+
+  drupal_add_js($settings, 'setting');
+}
+
+/**
+ * Implements hook_premission
+ */
+function supportgroups_default_permission() {
+  return array(
+      'access supportgroups admin' => array(
+          'title' => t('Access Supportgroups Admin Pages'),
+          'description' => t('Allow access to administration pages for Supportgroups.'),
+      ),
+  );
+}
+
+function supportgroups_default_admin_landing_page() {
+  drupal_set_message("TODO: Discuss this holder page.");
+
+  $output = '';
+  $output .= '<p>' . l('Edit Group Settings', 'admin/supportgroups/group-settings') . '</p>';
+  $output .= '<p>' . l('User Scores', 'admin/supportgroups/user-scores') . '</p>';
+
+  return $output;
+}
+
+/**
+ * Basic page to allow a path to hit elysia cron directly
+**/
+function supportgroups_cron_page() {
+  // ignore this path if the new relic extension is present
+  if (extension_loaded('newrelic')) {
+    newrelic_ignore_transaction();
+  }
+
+  // add cache bypass
+  drupal_page_is_cacheable(FALSE);
+
+  // Mimic Elysia cron check for admin run
+  $manual_run = TRUE;
+
+  if (function_exists('elysia_cron_run')) {
+    $result = elysia_cron_run($manual_run);
+  }
+
+  if ($result) {
+    drupal_set_message(t('Cron ran successfully'));
+  } else {
+    drupal_set_message(t('Cron run failed, disabled or nothing to do'));
+  }
+
+  return "";
+}

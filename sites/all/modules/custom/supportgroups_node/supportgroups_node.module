@@ -1,0 +1,1228 @@
+<?php
+/**
+ * @file
+ * Code for the supportgroups_node feature.
+ */
+
+include_once 'supportgroups_node.features.inc';
+
+define('SUPPORTGROUPS_NODE_MODULE_WEB_PATH', drupal_get_path('module', 'supportgroups_node'));
+define('SUPPORTGROUPS_NODE_YOUTUBE_REGEX', '/(?:http|https):\/\/(?:youtu\.be|www\.youtube\.com)\/[a-zA-Z0-9\?\-\=_]*[^\s|^\.^<]/i');
+define('SUPPORTGROUPS_NODE_IMAGE_REGEX', '/http?:\/\/(?:[a-z0-9\-]+\.)+[a-z]{2,6}(?:\/[^\/#?]+)+\.(?:jpe?g|gif|png)/i');
+define('SUPPORTGROUPS_NODE_POST_TIMER', '10');
+define('SUPPORTGROUPS_NODE_DISCUSSION_FORM_SELECTOR', 'group-post-node-form'); // goeverns ids and classes for discussion form
+
+/**
+ * Implements hook_menu().
+ */
+function supportgroups_node_menu() {
+  $items['admin/supportgroups/group-settings'] = array(
+      'title' => 'Group Settings',
+      'description' => 'Configure settings for group nodes and discussions within.',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('supportgroups_node_groups_admin_settings_form'),
+      'access arguments' => array('access supportgroups admin'),
+      'type' => MENU_DEFAULT_LOCAL_TASK,
+      'file' => 'supportgroups_node.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_theme()
+ */
+function supportgroups_node_theme(){
+  return array(
+    'group_anonymous_items' => array(
+      'arguments' => array('activity_items' => array(), 'users' => array()),
+      'template' => 'templates/group_anonymous_items',
+    ),
+    'group_anonymous_item' => array(
+      'arguments' => array('activity_item' => null, 'users' => array(), 'time' => null),
+      'template' => 'templates/group_anonymous_item',
+    ),
+  );
+}
+
+/**
+ * Preprocess function group_anonymous_items
+ */
+function supportgroups_node_preprocess_group_anonymous_items( &$vars ){
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+  $themed_items = array();
+  $vars['items'] = '';
+  foreach ($vars['activity_items'] as $time => $item) {
+    $themed_items[] = theme('group_anonymous_item', array('activity_item' => $item, 'users' => $vars['users'], 'time' => $time));
+  }
+  $vars['items'] = join($themed_items);
+  // set $past_activity_link and
+  $vars['recent_activity_link'] = l(t('You have new feed items'), 'javascript:void(0);', array('attributes' => array('id' => 'get-recent-activity', 'onclick' => 'return false;')));
+  $vars['past_activity_link'] = l(t('View More'), 'javascript:void(0);', array('attributes' => array('id' => 'get-past-activity', 'onclick' => 'return false;')));
+}
+
+/**
+ * Preprocess function group_anonymous_item
+ */
+function supportgroups_node_preprocess_group_anonymous_item( &$vars ){
+  global $user;
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+  $themed_items = array();
+
+  // Get user object from the author of the node
+  $current_user = $vars['users'][$vars['activity_item']->uid];
+  // Current user variable
+  $vars['current_user'] = $current_user;
+  // Retrieve the user profile picture
+  if( module_exists('supportgroups_utility') ){
+    $vars['user_picture'] = supportgroups_utility_profile_image($current_user, '50x50', false);
+    $vars['date'] = supportgroups_utility_load_date($vars['activity_item']->created);
+
+  }
+  //User profile url
+  $vars['profile_url'] = url('user/'.$current_user->uid, array( 'absolute' => TRUE ) );
+
+
+  // block media for marked groups
+  $blocked_media = false;
+  if(is_array($vars['activity_item']->group_ids)) {
+    foreach($vars['activity_item']->group_ids as $gid) {
+      if(_supportgroups_node_is_group_blocked_form_media($gid)) {
+       $blocked_media = true;
+      }
+    }
+  }
+
+  // preprare the extra markup for media
+  $extra = _supportgroups_node_render_extra($vars['activity_item'], $blocked_media);
+
+  // strip the unwanted links from the body
+  if(!empty($vars['activity_item']->field_discussion_embed_youtub['und'][0]['input'])) {
+    $video_id = _supportgroups_node_get_video_id_for_youtube_embed($vars['activity_item']->field_discussion_embed_youtub['und'][0]);
+
+    if(!empty($video_id)) {
+      $vars['activity_item']->body['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, $vars['activity_item']->body['und'][0]['safe_value']);
+    }
+  } elseif(!empty($vars['activity_item']->field_discussion_embed_images['und'][0]['value'])){
+    $vars['activity_item']->body['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_IMAGE_REGEX, $vars['activity_item']->body['und'][0]['safe_value']);
+  }
+
+  // Get content of discussion
+  $vars['discussion_body'] = theme('discussion_body', array('nid' => $vars['activity_item']->nid ,'body' => $vars['activity_item']->body['und'][0]['safe_value'], 'extra' => $extra ) );
+
+
+  // add node url
+  $vars['node_url'] = url( 'node/'.$vars['activity_item']->nid , array('absolute' => TRUE) );
+
+  // add group links
+  $group_array = array();
+  for( $i = 0; $i < count($vars['activity_item']->group_ids) ; $i++){
+    $group_array[] = "<a href='".url('node/'.$vars['activity_item']->group_ids[$i], array( 'absolute' => TRUE ))."'>".$vars['activity_item']->group_names[$i]."</a>";
+    if( $i >= 2 ){
+      break;
+    }
+  }
+  $vars['group_list'] = implode( ', ', $group_array);
+}
+
+/**
+ * Implements hook_preprocess_html
+ * @param array $vars
+ */
+function supportgroups_node_preprocess_html(&$vars) {
+  // on initial page load of group_post nodes, add class to disable the group assignment
+  $menu = menu_get_object();
+  if(isset($menu->nid) && $menu->type == 'group_post') {
+    $vars['classes_array'][] = 'disable-group-selection';
+  }
+}
+
+function supportgroups_node_preprocess_views_view(&$vars) {
+  if($vars['view']->name == 'master') {
+    $view = $vars['view'];
+  }
+}
+
+function supportgroups_node_preprocess_views_view_field(&$vars){
+  if($vars['view']->name == 'master') {
+    if($vars['field']->real_field == 'nothing') {
+      // check if [body_w_media] token exists in order to do work
+      if(strpos($vars['output'], '[body_w_media]') !== FALSE) {
+        // load discussion
+        $discussion = node_load($vars['row']->nid);
+        if(is_object($discussion)) {
+          // render the additional video or images
+          $extra = _supportgroups_node_render_extra($discussion, false);
+
+          // strip media links from body
+          $output = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_IMAGE_REGEX, $discussion->body['und'][0]['safe_value']);
+          $output = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, $output);
+
+          // trim the output
+          $output = views_trim_text(array('max_length' => 200, 'word_boundary' => TRUE, 'ellipsis' => TRUE, 'html' => true), $output) . $extra;
+
+          // replace the custom token in the view with our custom body rendering
+          $vars['output'] = str_replace('[body_w_media]', $output, $vars['output']);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_alter
+ * @param array $form
+ * @param array $form_state
+ * @param string $form_id
+ */
+function supportgroups_node_form_alter( &$form, &$form_state, $form_id){
+  global $user;
+
+  // hard override for all functions to avoid node_form_validate function does not exist error
+  require_once(DRUPAL_ROOT . "/modules/node/node.pages.inc");
+
+  switch($form_id) {
+    case 'group_post_node_form':
+
+      // add discussion field classes and nid attribute
+      if($form['nid']['#value']) {
+        // $form['field_discussion']['und'][0]['value']['#attributes']['nid'] = $form['nid']['#value'];
+        $form['field_discussion']['#attributes']['nid'] = $form['nid']['#value'];
+        // Disallow users from changing the url alias
+        $form['path']['pathauto']['#default_value'] = 0;
+      }
+
+      // Check to see if we are loading the node edit page
+      if( arg(0) == 'node' && arg(2) == 'edit'){
+        // If this is admin, then show all options
+        if(user_access('administer nodes')){
+          break;
+        }
+      }
+      // Add a class
+      $form['#attributes']['class'] = 'group-post-node-form';
+
+      // IF this is the edit form, then add the nid to the id attribute
+      if( $form['nid']['#value']){
+        // add the nid to the id of the form in the event we display multiple forms
+        $form['#attributes']['id'] = 'group-post-node-form-'.$form['nid']['#value'];
+
+        // remove access to the delete button
+        $form['actions']['delete']['#access '] = FALSE;
+        unset($form['actions']['delete']);
+      }
+
+
+
+      // $form['field_discussion']['und'][0]['value']['#attributes']['class'][] = 'edit-field-discussion-und-0-value';
+
+      // add image field classes and nid attribute
+      if($form['nid']['#value']) {
+        $form['field_discussion_image']['#id'] = 'edit-field-discussion-image-' . $form['nid']['#value'];
+        $form['field_discussion_image']['#attributes']['id'] = 'edit-field-discussion-image-' . $form['nid']['#value'];
+        $form['field_discussion_image']['#attributes']['nid'] = $form['nid']['#value'];
+        $form['field_discussion_image']['#attributes']['class'][] = 'edit-field-discussion-image-upload-button';
+
+        $form['field_discussion_image']['und']['#id'] = 'edit-field-discussion-image-und-' . $form['nid']['#value'];
+        $form['field_discussion_image']['und']['#attributes']['id'] = 'edit-field-discussion-image-und-' . $form['nid']['#value'];
+        $form['field_discussion_image']['und']['#attributes']['nid'] = $form['nid']['#value'];
+
+        $form['field_discussion_image']['und'][0]['#attributes']['nid'] = $form['nid']['#value'];
+        $form['field_discussion_image']['und'][0]['#attributes']['id'] = 'edit-field-discussion-image-und-0-' . $form['nid']['#value'];
+        $form['field_discussion_image']['und'][0]['#attributes']['class'][] = 'edit-field-discussion-image-und-0';
+        $form['field_discussion_image']['und'][0]['#id'] = 'edit-field-discussion-image-und-0-' . $form['nid']['#value'];
+      }
+
+      // add some spam protection
+      honeypot_add_form_protection($form, $form_state, array('honeypot', 'time_restriction'));
+
+      // Conditional hide fields from admin if we are not on the normal Drupal node add form page
+      // Notifications are hidden in after_build
+      if(!(arg(0) == 'node' && (arg(1) == 'add' || arg(2) == 'edit'))) {
+        $form['title']['#access'] = FALSE;
+        $form['body']['#access'] = FALSE;
+        $form['og_group_ref']['#access'] = FALSE;
+        $form['menu']['#access'] = FALSE;
+        $form['path']['#access'] = FALSE;
+        $form['comment_settings']['#access'] = FALSE;
+        $form['author']['#access'] = FALSE;
+        $form['options']['#access'] = FALSE;
+        $form['revision_information']['#access'] = FALSE;
+        $form['field_discussion_embed_youtub']['#access'] = FALSE;
+        $form['field_discussion_embed_images']['#access'] = FALSE;
+        $form['metatags']['#access'] = FALSE;
+        $form['xmlsitemap']['#access'] = FALSE;
+      }
+       // Changes Kevin made to hide the preview.
+      $form['actions']['preview']['#access'] = FALSE;
+      $form['actions']['preview_changes']['#access'] = FALSE;
+
+      // move the actions to the bottom
+      $form['actions']['#weight'] = 105;
+
+      // Build the group options for a custom UI controller
+      $group_options = _supportgroups_node_get_groups();
+
+      $og_group_selector_id = 'edit-og-group-selector';
+      if($form['nid']['#value']) {
+        $og_group_selector_id .= '-'.$form['nid']['#value'];
+      }
+
+      $form['og_group_selector'] = array(
+          '#type' => 'select',
+          '#options' => $group_options,
+          '#weight' => 99,
+          '#attributes' => array(
+            'class' => array('edit-og-group-selector'), // weird array_merge requirement for multi-select classes (must be array)
+            'id' => $og_group_selector_id,
+          ),
+          '#multiple' => TRUE,
+      );
+
+      // check for existing value og_group_ref
+      if(isset($form['#entity']->og_group_ref['und'][0]['target_id'])) {
+        foreach($form['#entity']->og_group_ref['und'] as $i => $value) {
+          $form['og_group_selector']['#default_value'][] = $value['target_id'];
+        }
+      } elseif(arg(0) == 'node' && is_numeric(arg(1)))  {
+        // TODO we may need a node load here to ensure that the page is a group node; for now it is a safe assumption
+        $form['og_group_selector']['#default_value'] = arg(1);
+      }
+
+
+  	  //create container for group label and the groups dropdown open
+  	  $group_container_markup = "";
+  	  $group_container_markup .= "<div id='groups-selection";
+  	  if($form['nid']['#value']) {
+  	    $group_container_markup .= '-'.$form['nid']['#value'];
+  	  }
+  	  $group_container_markup .= "' class='groups-selection'>";
+  		$form['groups-container-open'] = array(
+  			  '#markup' => $group_container_markup,
+  			  '#weight' => 97
+  			);
+  		//create container for group label and the groups dropdown close
+  		$form['groups-container-close'] = array(
+  			  '#markup' => "</div>",
+  			  '#weight' => 100
+  			);
+
+  		//enable group selection dropdown for posts
+  		$group_selector_markup = "";
+  		$group_selector_markup .= "<div id='group-dropdown";
+  		if($form['nid']['#value']) {
+  		  $group_selector_markup .= "-".$form['nid']['#value']."' nid='".$form['nid']['#value'];
+  		}
+  		$group_selector_markup .= "'>Group <span='arrow'>&#9660;</span></div>";
+  		$form['group-selector'] = array(
+  		  '#markup' => $group_selector_markup,
+  		  '#weight' => 98
+  		);
+
+      // create discussion image markup with conditional attributes
+  		$discussion_image_attributes = array('id' => 'group-post-image-button', 'class' => 'group-post-image-button');
+  		if($form['nid']['#value']) {
+  		  // override the id
+  		  $discussion_image_attributes['id'] = 'group-post-image-button-'.$form['nid']['#value'];
+
+  		  // add nid
+  		  $discussion_image_attributes['nid'] = $form['nid']['#value'];
+  		}
+
+      $form['discussion_image_button'] = array(
+        '#markup' => l('', 'javascript:void(0);', array('attributes' => $discussion_image_attributes, 'html' => true)),
+        '#weight' => 101,
+      );
+
+      //Add placeholder text
+      $form['field_discussion']['und'][0]['value']['#attributes'] = array(
+        'placeholder' => t('How are you?'),
+      );
+
+      // Add custom validation function and make sure it's called first
+      array_unshift($form['#validate'] , 'supportgroups_node_group_post_validate');
+
+      // Add custom submit function
+      $form['#submit'][] = 'supportgroups_node_group_post_submit';
+
+      // add ajax callback after form submit to deliver content back to page
+      $form['actions']['submit']['#ajax'] = array(
+          'callback' => 'supportgroups_node_group_node_callback',
+          'wrapper' => 'group-post-node-form',
+          'method' => 'replace',
+          'progress' => array(
+            'message' => t('Submitting your post'),
+          ),
+      );
+
+      $form['#attached'] = array(
+        'css' => array(
+          SUPPORTGROUPS_NODE_MODULE_WEB_PATH . '/css/supportgroups-node-group-post.css',
+        ),
+        'js' => array(
+          SUPPORTGROUPS_NODE_MODULE_WEB_PATH . '/js/supportgroups-node-group-post.js',
+        )
+      );
+
+  		//create container for posting functions opening
+  		$functions_open_markup = "";
+  		$functions_open_markup .= "<div id='post-functions";
+  		if($form['nid']['#value']) {
+  		  $functions_open_markup .= "-".$form['nid']['#value'];
+  		}
+  		$functions_open_markup .= "' class='post-functions'>";
+  		$form['functions-open'] = array(
+  			'#markup' => $functions_open_markup,
+  			'#weight' => 95
+  		);
+  		//create container for posting functions closing
+  		$form['functions-close'] = array(
+  			  '#markup' => "</div>",
+  			  '#weight' => 110
+  			);
+
+  		//hide preview button
+  		$form['actions']['preview']['#access']=FALSE;
+
+  		// form after_build
+  		$form['#after_build'][] = 'supportgroups_node_group_post_after_build';
+      break;
+  }
+
+}
+
+function supportgroups_node_group_post_after_build($form, &$form_state) {
+  // only prevent access if we are rendered ina  block
+  if(!(arg(0) == 'node' && (arg(1) == 'add' || arg(2) == 'edit'))) {
+    $form['notifications']['#access'] = FALSE;
+  }
+
+  if($form['nid']['#value']) {
+    $form['field_discussion_image']['und'][0]['upload']['#id'] = 'edit-field-discussion-image-und-0-upload-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['upload']['#attributes']['id'] = 'edit-field-discussion-image-und-0-upload-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['upload_button']['#ajax']['wrapper'] = 'edit-field-discussion-image-und-0-ajax-wrapper-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['upload_button']['#id'] = 'edit-field-discussion-image-und-0-upload-button-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['upload_button']['#attributes']['id'] = 'edit-field-discussion-image-und-0-upload-button-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['remove_button']['#ajax']['wrapper'] = 'edit-field-discussion-image-und-0-ajax-wrapper-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['remove_button']['#id'] = 'edit-field-discussion-image-und-0-remove-button-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['remove_button']['#attributes']['id'] = 'edit-field-discussion-image-und-0-remove-button-' . $form['nid']['#value'];
+    $form['field_discussion_image']['und'][0]['#prefix'] = '<div id="edit-field-discussion-image-und-0-ajax-wrapper-'.$form['nid']['#value'].'">';
+  }
+
+  // add the ajax path of the buttons to append them to Drupal.settings.ajax
+  $form['field_discussion_image']['und'][0]['upload_button']['#attributes']['path'] = $form['field_discussion_image']['und'][0]['upload_button']['#ajax']['path'];
+  $form['field_discussion_image']['und'][0]['remove_button']['#attributes']['path'] = $form['field_discussion_image']['und'][0]['remove_button']['#ajax']['path'];
+
+  return $form;
+}
+
+/**
+ * Implements hook_query_alter().
+ *
+ * @param QueryAlterableInterface $query
+ */
+function supportgroups_node_query_alter(QueryAlterableInterface $query) {
+  // Solve The referenced entity (@type: @id) is invalid error stemming from OgBehaviorHandler->validate()
+  // This should be safe because a query where node nid=-1 is of no use except to produce a null result
+  if ($query->hasTag('entity_field_access') && $query->hasTag('og')) {
+    $field = $query->getMetaData('field');
+    if ($field['field_name'] == 'og_group_ref') {
+      $where =& $query->conditions();
+      foreach ($where as $key => $item) {
+        if (!isset($item['field']) || !isset($item['value']) || !isset($item['operator'])) continue;
+        if ($item['field'] == 'node.nid'
+          && $item['value'] == -1
+          && $item['operator'] == '=') {
+          unset ($where[$key]);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of hook_block_info
+ * @return array
+ */
+function supportgroups_node_block_info(){
+  $blocks = array();
+  // This form will display only on the groups pages
+  $blocks['sg_group_post_block'] = array(
+    'info' => t('Support Groups Discussion Form'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  $blocks['sg_group_join_leave'] = array(
+    'info' => t('Join or Leave Group Button'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implementation of hook_block_view
+ * @param mixed $delta
+ * @return array
+ */
+function supportgroups_node_block_view($delta = ''){
+  $block = array();
+  switch($delta){
+    // This block is used to place the node form at the top of the group page
+    // It should only be displayed if the user belongs to the group
+    case 'sg_group_join_leave':
+      if (og_is_member('node', arg(1))) {
+        $link = 'group/node/' . arg(1) . '/subscribe/og_group_ref';
+        $label = t('Join');
+      }
+      else {
+        $link = 'group/node/' . arg(1) . '/unsubscribe/og_group_ref';
+        $label = t('Leave');
+      }
+      $block['subject'] = "";
+      $block['content'] = array(
+        '#type' => 'link',
+        '#title' => $label,
+        '#href' => $link,
+        '#prefix' => '<div class="greenbutton">',
+        '#suffix' => '</div>'
+      );
+      break;
+
+    case 'sg_group_post_block':
+      global $user;
+      // Allow to add a node here if
+      // User has permissions (non auth cannot post)
+      // User is a member of group OR we are on the user page
+      if (user_access('create group_post content') && (arg(0) == 'user' || og_is_member('node', arg(1)))) {
+        $block['subject'] = "";
+        $block['content'] = array(
+          '#markup' => _supportgroups_node_group_post_form($user),
+        );
+
+        // add a place to clone the default form
+        $settings = array(
+          'supportgroups_node' => array(
+            'group_post' => array(
+              'form' => '',
+              'selector' => SUPPORTGROUPS_NODE_DISCUSSION_FORM_SELECTOR,
+            ),
+          ),
+        );
+
+        drupal_add_js($settings, 'setting');
+      }
+      elseif (user_access('create group_post content')) {
+        $block['subject'] = "";
+        $block['content'] = array(
+          '#markup' => '<h2>Please join the group to post in it.</h2><p></p>',
+        );
+      }
+      else {
+        $message = _supportgroups_node_unauth_message_html($user->uid);
+        $block['subject'] = "";
+        $block['content'] = array(
+          '#markup' => $message,
+        );
+      }
+
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Custom validation callback for group
+ * @param array $form
+ * @param array $form_state
+ */
+function supportgroups_node_group_post_validate($form, &$form_state){
+  global $user;
+  $values = $form_state['values'];
+
+  // Check to see that the user did not post anything within the last 10 seconds
+  //TODO Add cahce backed function for this. There is no reason we should hit the DB just to find a user_id that we should already know from node_insert
+  $post_result = db_query("SELECT nid,created FROM {node}
+    WHERE uid = :uid ORDER BY created DESC LIMIT 1",
+    array( ':uid' => $user->uid ) );
+  foreach( $post_result as $row ){
+    if( (time() - $row->created) < SUPPORTGROUPS_NODE_POST_TIMER ){
+      form_set_error('node_post_timer', 'Cannot create your post at this time. Please try again in a few moments.');
+    }
+    break;
+  }
+
+  // Allocate $discussion with the field_discussion text
+  if(isset($values['field_discussion'])){
+    $discussion = $values['field_discussion']['und'][0]['value'];
+  }
+  // match youtube urls
+  $youtube_regex = SUPPORTGROUPS_NODE_YOUTUBE_REGEX;
+  $youtube_matches = array();
+
+  preg_match($youtube_regex, $discussion, $youtube_matches);
+
+  foreach($youtube_matches as $k => $youtube) {
+    $form_state['values']['field_discussion_embed_youtub']['und'][$k]['input'] = str_replace('https', 'http', $youtube);
+    $form_state['values']['field_discussion_embed_youtub']['und'][$k]['_weight'] = $k;
+
+    // break after first
+    break;
+  }
+
+  // match image urls
+  $image_regex = SUPPORTGROUPS_NODE_IMAGE_REGEX;
+  $image_matches = array();
+
+  preg_match($image_regex, $discussion, $image_matches);
+
+  foreach($image_matches as $k => $image) {
+    $form_state['values']['field_discussion_embed_images']['und'][$k]['value'] = $image;
+    $form_state['values']['field_discussion_embed_images']['und'][$k]['_weight'] = $k;
+
+    // break after first
+    break;
+  }
+
+  // pass the values of the og_group_selector into the og_group_ref
+  if( !empty($values['og_group_selector']) && count( $values['og_group_selector'] ) <= 3  ) {
+    $groups = $values['og_group_selector'];
+    // Loop through og_group_selector and add the values to og_group_ref
+    for( $i = 0; $i < count($values['og_group_selector']) ; $i++){
+      $form_state['values']['og_group_ref']['und'][$i]['target_id'] = array_shift($groups);
+    }
+
+    // if groups have been updated, set a message letting the user know they have successfully changed
+    // and the discussion may no longer be in the same group.
+    if($form['nid']['#value']) {
+      $original_groups = array();
+      $new_groups = array_values($values['og_group_selector']);
+      foreach($form['og_group_ref']['und'][0]['#entity']->og_group_ref['und'] as $value) {
+        $original_groups[] = $value['target_id'];
+      }
+
+      $difference = array_diff($new_groups, $original_groups);
+
+      if(count($difference)) {
+        drupal_set_message(t('The groups for this discussion have been successfully updated'), 'status');
+      }
+    }
+  } else { // If the user hasn't chosen a group or chooses more than 3 groups, then throw an error
+    if(count( $values['og_group_selector'] ) > 3) {
+      form_set_error('og_group_ref_maximum', 'You can select a maximum of 3 groups.');
+    } else { // no groups selected
+      form_set_error('og_group_ref_minimum', 'You must select at least one group');
+    }
+  }
+
+  // set discussion into the body
+  $form_state['values']['body']['und'][0]['value'] = $discussion;
+  $form_state['values']['body']['und'][0]['format'] = 1;
+
+  // disallow empty posts if there are no media fields
+  $has_media = _supportgroups_node_does_discussion_have_media($form_state['values']);
+  if(!$has_media && empty($discussion)) {
+    form_set_error('field_discussion_empty', t('Your discussion cannot be empty.'));
+  }
+
+  $blocked_media = false;
+  foreach($values['og_group_selector'] as $gid) {
+    if(_supportgroups_node_is_group_blocked_form_media($gid)) {
+      $blocked_media = true;
+      $message = str_replace('[group_name]', supportgroups_feed_get_group_name($gid), variable_get('supportgroups_node_no_media_for_groups_message', t('A group you have posted to does not allow media to be shown.'))) . '. You cannot post an empty discussion in a group with blocked media.';
+      break;
+    }
+  }
+
+  if($has_media && $blocked_media) {
+   // need to strip the $discussion to see if anything is left of the post
+
+   $youtube_stripped_discussion = preg_replace(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, '', $discussion);
+   $image_stripped_discussion = preg_replace(SUPPORTGROUPS_NODE_IMAGE_REGEX, '', $youtube_stripped_discussion);
+
+   $remaining_discussion = preg_replace('/^\s+|\n|\r|\s+$/m', '', $image_stripped_discussion);
+
+   if(empty($remaining_discussion)) {
+     form_set_error('blocked_media_for_group', $message);
+   }
+  }
+
+
+  // set title to first 60 characters of $discussion text IF this is a new node
+  //TODO We may need to put validation in here if the post starts with a video or image
+  if(!$form['nid']['#value']) {
+    // If the discussion is empty and it has media content, then add a default title
+    //TODO need to distinguish from a video or an image
+    $new_title = strip_tags($discussion);
+    if( $new_title != ''){
+      $title = substr( $new_title , 0, 60 );
+    } else{
+      $title = 'Media';
+    }
+    $form_state['values']['title'] = $title;
+    $form_state['values']['body']['und'][0]['summary'] = $title;
+  }
+
+}
+
+/**
+ * Custom submit callback for group post node form
+ * @param array $form
+ * @param array $form_state
+ */
+function supportgroups_node_group_post_submit($form, &$form_state) {
+  global $user;
+  // get user's groups
+  $user_groups = explode(',', supportgroups_feed_get_groups_for_uid($user->uid));
+
+  //loop the groups and see if they exist in the user groups
+  foreach($form_state['values']['og_group_selector'] as $gid) {
+    // if the user posted to a group they are not a part of them send them a message
+    if(!in_array($gid, $user_groups)) {
+      // get the name of the new group
+      $name = supportgroups_feed_get_group_name($gid);
+
+      drupal_set_message('Thank you for posting! It will appear in a few minutes. Sorry for the delay. Visit ' . l($name, 'node/'.$gid) . ' to see your post', 'status');
+    }
+  }
+
+  if(_supportgroups_node_does_discussion_have_media($form_state['values'])) {
+    // block media for marked groups
+    foreach($form_state['values']['og_group_selector'] as $gid) {
+      if(_supportgroups_node_is_group_blocked_form_media($gid)) {
+        $message = str_replace('[group_name]', supportgroups_feed_get_group_name($gid), variable_get('supportgroups_node_no_media_for_groups_message', t('A group you have posted to does not allow media to be shown.')));
+        drupal_set_message($message, 'status');
+      }
+    }
+  }
+
+}
+
+function supportgroups_node_node_view($node, $view_mode, $langcode) {
+  global $user;
+
+  /** online groups page */
+  if ($node->nid == 18719 && $user->uid > 0) {
+    // Add js to convert join buttons to leave buttons based on group membership
+    // We make all the buttons join by default on the assumption that most members will not belong to most groups
+    // This function returns an array 'node' => array(og_member_id => gid, og_member_id => gid etc)
+    $groups = og_get_entity_groups();
+    $settings['supportgroups_node'] = $groups;
+    drupal_add_js($settings, 'setting');
+    drupal_add_js(drupal_get_path('module', 'supportgroups_node') . '/js/supportgroups-online.js');
+  }
+
+  switch($node->type) {
+    case 'set_up_group':
+
+      _supportgroups_node_unauth_message($node);
+
+      $groupname=drupal_get_title();
+	    drupal_set_title($groupname .' Support Group');
+      // nid of the group to load
+      $gid = $node->nid;
+
+      // initial load of timestamp is 0
+      $from_timestamp = 0;
+
+      // set number of rows to the default
+      //TODO we may want to override this for an initial payload
+      $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS;
+
+      // query for group feed data
+      $data = supportgroups_feed_get_recent_activity_for_group($gid, $from_timestamp, 10);
+
+      // strip nids to unique array
+
+      // make a copy of the nids to remove duplicate content for first page loads
+      $nids = $data['activity_nids'];
+
+      // count to see how many nodes are created on page load
+      $discussion_count = 0;
+      // remove duplicate content for initial page load
+      foreach($data['activity'] as $time => $n) {
+        if (FALSE !== $key = array_search($n->nid, $nids)) { // if the nid is in the array, remove it for future entries
+          unset($nids[$key]);
+         $discussion_count++;
+        }
+        else { // else we have seen the nid before and need it removed from initial page load
+          unset($data['activity'][$time]);
+        }
+      }
+
+      if( $user->uid > 0 ){
+        $theme_output = theme('sg_f_activity_items',array('activity_items' => $data['activity'], 'users' => $data['users']));
+      } else{
+        $theme_output = theme('group_anonymous_items',array('activity_items' => $data['activity'], 'users' => $data['users']));
+      }
+
+      $node->content['feed'] = array(
+        '#markup' => $theme_output,
+        '#title' => $node->title . ' ' . t('Feed'),
+      );
+
+      // add initial Drupal.settings
+      $settings = _supportgroups_feed_init_feed_settings($node->nid, 'node');
+
+      // append existing nids for initial page load and future search for what is already existing on page
+      $settings['supportgroups_feed']['activity']['nids'] = $data['activity_nids'];
+
+      // check to see how many discussions are loaded
+      $settings['supportgroups_node_count'] = array(
+        'nodecount' => array(
+          'discussion_count' => $discussion_count,
+          'running' => 0,
+        ),
+      );
+
+      drupal_add_js($settings, 'setting');
+      drupal_add_js(SUPPORTGROUPS_NODE_MODULE_WEB_PATH.'/js/supportgroups-node.js');
+      break;
+
+    case 'group_post':
+      _supportgroups_node_unauth_message($node);
+      // grab the discussion node from cache in the feed format we are expecting
+      // so we can run it through the suuport_feed themeing functions
+      $item = supportgroups_feed_get_activity_item($node->nid);
+      // Add node uid if the uid is not in the $item->comment_uids variable
+      if( !in_array( $node->uid, $item->comment_uids)  ){
+        $item->comment_uids[] = $node->uid;
+      }
+      // build the user data out of cache to render within the comments
+      $users = supportgroups_feed_get_user_info_multi($item->comment_uids);
+
+      // add custom discussion key to render on the node tpl
+      $node->content['discussion'] = array(
+          '#markup' => theme('sg_f_activity_item',array('activity_item' => $item, 'users' => $users, 'page' => 'group_post')),
+          '#title' => $node->title,
+      );
+
+      drupal_add_library('system', 'drupal.form');
+      drupal_add_library('system', 'drupal.ajax');
+      drupal_add_js(SUPPORTGROUPS_NODE_MODULE_WEB_PATH . '/js/supportgroups-node-group-post.js');
+      drupal_add_css(SUPPORTGROUPS_NODE_MODULE_WEB_PATH . '/css/supportgroups-node-group-post.css');
+
+      // add a place to clone the default form
+      $settings = array(
+          'supportgroups_node' => array(
+              'group_post' => array(
+                  'form' => '',
+                  'selector' => SUPPORTGROUPS_NODE_DISCUSSION_FORM_SELECTOR,
+              ),
+          ),
+      );
+
+      drupal_add_js($settings, 'setting');
+      break;
+  }
+}
+
+/**
+ * Add a message for unauthenticated users
+ *
+ * @param $node
+ */
+function _supportgroups_node_unauth_message(&$node) {
+  global $user;
+  if (in_array('unauthenticated user', $user->roles)) {
+    $message = _supportgroups_node_unauth_message_html($user->uid);
+    $node->content['unauth_message'] = array(
+      '#markup' => $message
+    );
+  }
+}
+
+/**
+ * HTML message to unauth users
+ *
+ * @param $uid
+ * @return string
+ */
+function _supportgroups_node_unauth_message_html($uid) {
+  return '<h2><b>' . t('In order to have full posting rights, please verify your email address.  If you cannot find a welcome email from us then try resending one from !here.', array('!here' => l('here', 'toboggan/revalidate/' . $uid ))) . '</b></h2>';
+}
+function supportgroups_node_mail($key, &$message, $params) {
+  switch ($key) {
+    case 'notice':
+      $message['subject'] = t($params['subject']);
+      $message['body'][] = $params['body'];
+      $message['headers']['Content-Type'] = 'text/html; charset=UTF-8; format=flowed';
+      break;
+  }
+}
+/**
+*  recreates the node form
+*/
+function supportgroups_node_group_node_callback($form, &$form_state) {
+  global $user;
+  $commands = array();
+  $error = false;
+  $returned_messages = '';
+  
+  $get_messages = drupal_get_messages(NULL, TRUE);
+  if(count($get_messages)) {
+    $returned_messages .= "<div class='messages'>";
+
+    if(isset($get_messages['error']) && count($get_messages['error'])) {
+      $error = true;
+    }
+
+    foreach($get_messages as $type => $messages) {
+      foreach($messages as $key => $message) {
+        $returned_messages .= '<div class="message '.$type.'">' . $message . '</div>';
+        $arr = explode(" ", $message);
+        for($i=0; $i<count($arr); $i++){
+          $arr_str = str_replace(array("<em>","</em>"), array("",""), $arr[$i]);
+          $pos = strpos($arr_str, "node/");
+          if($pos !== false){
+            $pos1 = strpos($arr_str, ".");
+            $nid = substr($arr_str,$pos + 5, $pos1 - 5 - $pos);
+          }
+        }
+      }
+    }
+  }
+
+  // prepare special selector for prepending messages
+  if($form['nid']['#value']) {
+    $message_selector = 'activity-item-'.$form['nid']['#value'];
+  } else {
+    $message_selector = 'block-supportgroups-node-sg-group-post-block';
+  }
+
+  // return messages regarless of error
+  $commands[] = ajax_command_prepend('#'.$message_selector, $returned_messages);
+
+  // determine the node selector from whether this is a new node or existing
+  // leaving selector without # for id and selectively adding it to ajax_commands below.
+  $selector = SUPPORTGROUPS_NODE_DISCUSSION_FORM_SELECTOR;
+  if($form['nid']['#value']) {
+    $selector .= '-'. $form_state['values']['nid'];
+  }
+
+
+  // replace contents if no errors
+  if(!$error) {
+    //check for contact info
+
+    $val_str = $form["field_discussion"]["und"][0]["value"]["#value"];
+    $flag_email = false;
+    preg_match("/[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,3})/i", $val_str, $matches);
+    for($i = 0; $i< count($matches); $i++){
+     if(filter_var($matches[$i], FILTER_VALIDATE_EMAIL) != "")
+      $flag_email = true;
+    }
+    if($flag_email == true && $nid && strlen($nid) > 0){
+
+   
+      // Send the email.
+      $params = array(
+        'subject' => "Possible Spam",
+        'body' => "Possible Spam detected: <br><br> <a href='http://www.supportgroups.com/node/".$nid."'>link here</a> <br> <a href='http://www.supportgroups.com/user/".$user->uid."'>user link</a>",
+      );
+      db_query("INSERT INTO spam_list (uid, nid) VALUES (:uid, :nid)", array( ':uid' => $user->uid, ':nid' => $nid));
+      //drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);
+
+    } else {
+      if($flag_email){
+        $params = array(
+          'subject' => "Possible Spam",
+          'body' => "Possible Spam detected: <br><br> <a href='http://www.supportgroups.com/user/".$user->uid."'>user link</a>",
+        );
+        //drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);      
+      }
+    }
+    // Ajax action for a new node
+    if(!$form['nid']['#value']){
+      $form = _supportgroups_node_group_post_form($GLOBALS['user'], 0, FALSE, TRUE);
+      $commands[] = supportgroups_node_command_supportgroups_node_reload_form($selector, $form);
+
+    } else { // Ajax action for an edit form page
+
+      // block media for marked groups
+      $blocked_media = false;
+      foreach($form_state['values']['og_group_ref']['und'] as $key => $value) {
+        if(_supportgroups_node_is_group_blocked_form_media($value['target_id'])) {
+          $blocked_media = true;
+        }
+      }
+
+      // preprare the extra markup for media
+      $extra = _supportgroups_node_render_extra((object)$form_state['values'], $blocked_media);
+
+      // strip the unwanted links from the body
+      if(!empty($form_state['values']['field_discussion_embed_youtub']['und'][0]['input'])) {
+        $video_id = _supportgroups_node_get_video_id_for_youtube_embed($form_state['values']['field_discussion_embed_youtub']['und'][0]);
+
+        if(!empty($video_id)) {
+          $form_state['values']['body']['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, $form_state['values']['body']['und'][0]['safe_value']);
+        }
+      } elseif(!empty($discussion->field_discussion_embed_images['und'][0]['value'])){
+        $form_state['values']['body']['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_IMAGE_REGEX, $form_state['values']['body']['und'][0]['safe_value']);
+      }
+
+      // Get content of discussion
+      $body = theme('discussion_body', array('nid' => $form_state['values']['nid'], 'body' => $form_state['values']['body']['und'][0]['value'], 'extra' => $extra ));
+
+      $commands[] = supportgroups_node_command_supportgroups_node_replace($selector, $body);
+    }
+  }
+
+  // add commands to an associative array to be run in order when returned to the page
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ * Implementation of Drupal Ajax Framework command
+ * @param string $selector
+ * @return array
+ */
+function supportgroups_node_command_supportgroups_node_reload_form($selector, $markup) {
+  return array(
+      'command' => 'supportgroups_node_reload_form',
+      'data' => array('selector' => $selector, 'markup' => $markup),
+  );
+}
+
+/**
+ * Implementation of Drupal Ajax Framework command
+ * @param string $selector
+ * @return array
+ */
+function supportgroups_node_command_supportgroups_node_replace($selector, $markup) {
+  return array(
+      'command' => 'supportgroups_node_replace',
+      'data' => array('selector' => $selector, 'markup' => $markup),
+  );
+}
+
+
+/**
+ * Helper function to render drupal node form
+ * @param object $user
+ * @return string
+ */
+function _supportgroups_node_group_post_form($user, $nid = 0, $edit = FALSE, $rebuild = FALSE){
+  // Check to see if we are editing a node
+  if( $edit ){
+    // if we are editing a node, then we need to pull in the edit form
+    $node = node_load($nid);
+  }
+  // Creating a new node
+  else{
+    $node = (object) array('uid' => $user->uid, 'name' => (isset($user->name) ? $user->name : ''), 'type' => 'group_post', 'language' => LANGUAGE_NONE);
+  }
+
+  $form_state['build_info']['args'] = array($node);
+
+  // set this up so that the form can be consistently reset from ajax
+  $form_state['no_redirect'] = TRUE;
+  $form_state['input'] = array();
+  $form_state['values'] = array();
+
+
+  form_load_include($form_state, 'inc', 'node', 'node.pages');
+
+  if($rebuild) {
+    // set rebuild for the $form_state
+    $form_state['rebuild'] = TRUE;
+    $form = drupal_rebuild_form('group_post_node_form', $form_state);
+    return drupal_render($form);
+
+  } else {
+    $form = drupal_build_form('group_post_node_form', $form_state);
+    return drupal_render($form);
+  }
+
+  $form = drupal_build_form('group_post_node_form', $form_state);
+  return drupal_render($form);
+
+}
+
+/**
+ *  This function will return the list of groups
+ */
+//TODO This function needs cache and cache invalidation
+function _supportgroups_node_get_groups(){
+  global $user;
+  $subscriptions = array();
+  $all = array();
+  // This query will return the groups that the logged in user is in
+  $sql = "SELECT gid,title FROM {og_membership} og_membership INNER JOIN {node} node ON og_membership.gid = node.nid WHERE entity_type='user' AND etid='".$user->uid."' ORDER BY title ASC";
+  $results = db_query($sql);
+  foreach( $results as $record ){
+    $subscriptions[$record->gid] = $record->title;
+  }
+  // This query will show all of the groups
+  $sql2 = "SELECT nid, title FROM {node} WHERE type IN ('set_up_group') AND status='1' ORDER BY title ASC";
+  $results2 = db_query($sql2);
+  foreach( $results2 as $record){
+    $all[$record->nid] = $record->title;
+  }
+  // This if/else statement will separate the groups you joined
+  if(is_array($subscriptions)){
+    $other = array_diff_assoc( $all, $subscriptions);
+    $options = array(
+        t('My groups') => $subscriptions,
+        t('Other groups') => $other,
+    );
+  }
+  // If the user is not in a group, then they will only see an all group display
+  else{
+    $other = $all;
+    $options = array(
+        t('All groups') => $other,
+    );
+  }
+  return $options;
+}
+
+/**
+ *  Helper function to get the uid from a username
+ */
+function _supportgroups_node_get_uid( $username ){
+  $uid = '';
+  $result = db_query("SELECT uid FROM {users}
+    WHERE name = :name", array( ':name' => $username ) );
+  foreach( $result as $row){
+    $uid = $row->uid;
+    break;
+  }
+  return $uid;
+}
+
+/**
+ * Helper function to determine blocked media status
+ * @param integer $gid
+ * @return boolean
+ */
+function _supportgroups_node_is_group_blocked_form_media($gid) {
+  $blocked_groups = variable_get('supportgroups_node_no_media_for_groups');
+
+  // if the key for the group doesn't have a value then the group is blocked
+  if(!$blocked_groups[$gid]) {
+    return false;
+  }
+
+  // if no matches or error then block
+  return true;
+}
+
+/**
+ * Helper function to consolidate the extra rendering of group_post node fields
+ * @param object $discussion
+ * @param boolean $blocked_media
+ * @return string <string, An>
+ */
+function _supportgroups_node_render_extra($discussion, $blocked_media) {
+  $extra = '';
+
+  // If an image is uploaded, then show that image
+  if(!$blocked_media && !empty($discussion->field_discussion_image['und'][0]['fid'])){
+    if(module_exists('supportgroups_utility')){
+      // theme image
+      $extra .= supportgroups_utility_discussion_image( $discussion->field_discussion_image['und'][0]['uri'], '400x400' );
+    }
+  }
+  // If an image has not been uploaded and there exist a youtube link,
+  // Then show that instead
+  elseif(!empty($discussion->field_discussion_embed_youtub['und'][0]['input'])){
+
+    $video_id = _supportgroups_node_get_video_id_for_youtube_embed($discussion->field_discussion_embed_youtub['und'][0]);
+
+    if(!$blocked_media && !empty($video_id)) {
+      $extra .= theme('discussion_youtube', array('youtube' =>  $video_id));
+    }
+  }
+  // If there exist an image link, then we will show the image
+  elseif(!empty($discussion->field_discussion_embed_images['und'][0]['value'])){
+    if(!$blocked_media && module_exists('supportgroups_utility')){
+      // theme image
+      //$extra .= supportgroups_utility_discussion_image( $object->field_discussion_embed_images['und'][0]['value'], '400x400' );
+      // Need a better method
+      $extra = "<img src='".$discussion->field_discussion_embed_images['und'][0]['value']."' height='400px' width='400px'/>";
+    }
+  }
+
+  return $extra;
+}
+
+/**
+ * Helper function to strip links from markup
+ * @param string $pattern
+ * @param string $value
+ * @return string
+ */
+function _supportgroups_node_strip_links_from_markup($pattern, $value) {
+  // strip the pattern from the $value provided
+  $new_value = preg_replace($pattern,'',$value);
+
+  // if a value is present then return it
+  if(!empty($new_value)) {
+    return $new_value;
+  }
+
+  // always return something if the above fails
+  return $value;
+}
+
+/**
+ * Helper function for parsing out the video_id of an embedded youtube field
+ * @param array $field
+ * @return string
+ */
+function _supportgroups_node_get_video_id_for_youtube_embed($field) {
+  $video_id = "";
+
+  // if the video_id is set then take it
+  if(!empty($field['video_id'])) {
+    $video_id = $field['video_id'];
+  } else {
+    // there are two possibilities of youtube links
+    // http://www.youtube.com/watch?v=A7GLTSg7ieI
+    // http://youtu.be/MZuFN1x6rGA
+    // we need to explode to find a match
+    $youtube = explode('?v=', $field['input'] );
+    if(isset($youtube[1])) {
+      $video_id = $youtube[1];
+    } else {
+      $youtube = explode('/', str_replace(array('http://', 'https://'), '', $field['input']));
+      if(isset($youtube[1])) {
+        $video_id = $youtube[1];
+      }
+    }
+  }
+
+  return $video_id;
+}
+
+/**
+ * Helper function to determine if a discussion node has media attached
+ * @param array $fields
+ * @return boolean
+ */
+function _supportgroups_node_does_discussion_have_media($fields) {
+  foreach($fields as $key => $field) {
+    switch($key) {
+      case 'field_discussion_image':
+        if($field['und'][0]['fid']) {
+          return true;
+        }
+        break;
+
+      case 'field_discussion_embed_youtub':
+        if($field['und'][0]['input']) {
+          return true;
+        }
+        break;
+
+      case 'field_discussion_embed_images':
+        if($field['und'][0]['value']) {
+          return true;
+        }
+        break;
+    }
+  }
+
+  return false;
+}

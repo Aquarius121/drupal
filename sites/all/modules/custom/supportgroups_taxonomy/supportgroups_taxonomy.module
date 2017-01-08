@@ -1,0 +1,236 @@
+<?php
+
+define('SUPPORTGROUPS_TAX_CACHE_TABLE', 'cache');
+define('SUPPORTGROUPS_TAX_CACHE_CID', 'supportgroups_taxonomy_' );
+define('SUPPORTGROUPS_TAX_CACHE_TTL','+20 minutes' );
+define('SUPPORTGROUPS_TAX_MODULE_PATH', drupal_get_path('module','supportgroups_taxonomy'));
+
+include_once 'includes/supportgroups_taxonomy.features.inc';
+
+/**
+ * Implementation of hook menu
+ */
+function supportgroups_taxonomy_menu(){
+  $items = array();
+  $items['ajax/joingroup/%'] = array(
+    'access callback' => TRUE,
+      'title' => 'supportgroups_taxonomy: join group',
+      'page callback' => '_supportgroups_taxonomy_ajax_join',
+      'page arguments' => array(2),
+      'type' => MENU_CALLBACK
+  );
+  return $items;
+}
+
+/**
+ *  Implementation of hook theme
+ */
+function supportgroups_taxonomy_theme(){
+  return array(
+    'group_taxonomy' => array(
+      'template' => 'templates/group_taxonomy',
+      'arguments' => array( 'group' => null)
+    ),
+  );
+}
+
+/**
+ * Preprocess function for group taxonomy template
+ */
+function supportgroups_taxonomy_preprocess_group_taxonomy( &$vars){
+  drupal_add_js(SUPPORTGROUPS_TAX_MODULE_PATH.'/js/supportgroups_taxonomy.js');
+  drupal_add_css(SUPPORTGROUPS_TAX_MODULE_PATH.'/css/supportgroups_taxonomy.css');
+  if (isset($vars['group'][0]) && $vars['group'][0]['title'] != ''){
+    $vars['nid'] = $vars['group'][0]['nid'];
+    $vars['title'] = $vars['group'][0]['title'];
+  }
+  else {
+    global $base_url;
+
+    $vars['nid'] = '';
+    // $vars['title'] = l(t('See all groups'), 'http://online' . str_replace('http://', '', $base_url));
+
+    // hardcoding the link for now. refs #1078
+    $vars['title'] = '<a href="' . SG_HTTP_PROTOCOL . 'online.supportgroups.com">' . t('See all groups') .
+    '</a>';
+
+  }
+}
+
+/**
+ *  Implementation of block info
+ */
+function supportgroups_taxonomy_block_info(){
+  $blocks = array();
+  $blocks['groups_taxonomy'] = array(
+    'info' => t('Group Taxonomy Block'),
+    'cache' => DRUPAL_CACHE_CUSTOM,
+  );
+  return $blocks;
+}
+
+/**
+ *  Implementation of Block View
+ */
+function supportgroups_taxonomy_block_view( $delta = '' ){
+  $block = array();
+  switch($delta){
+    case 'groups_taxonomy':
+      // Retrieve the content for the groups_taxonomy
+      $block['content'] = array(
+        '#markup' => supportgroups_taxonomy_content(),
+      );
+      break;
+  }
+  return $block;
+}
+
+/**
+ *  This module will return the content of the block
+ */
+function supportgroups_taxonomy_content(){
+  $content = '';
+  // Get cache
+  $cid = supportgroups_taxonomy_cache_get();
+  $cached = cache_get( $cid, SUPPORTGROUPS_TAX_CACHE_TABLE);
+  if( $cached){
+    $groupArray = $cached->data;
+  }
+  else{
+    // Retrieve the group to show
+    $groupArray = supportgroups_taxonomy_get_group();
+    cache_set( $cid, $groupArray, SUPPORTGROUPS_TAX_CACHE_TABLE, strtotime(SUPPORTGROUPS_TAX_CACHE_TTL));
+  }
+  $content = theme( 'group_taxonomy', array( 'group' => $groupArray) );
+  return $content;
+}
+
+/**
+ * Retrieve the group content to show
+ */
+function supportgroups_taxonomy_get_group(){
+  global $user;
+  // Retrieve array of groups
+  $groupArray = supportgroups_taxonomy_group_array();
+
+  // Get the groups you are joined
+  $current_user_groups = supportgroups_taxonomy_usergroups( $user->uid );
+  // Retrieve a group base on the current user's groups
+  $group_to_show = supportgroups_taxonomy_get_a_group( $current_user_groups, $groupArray);
+  return $group_to_show;
+}
+
+/**
+ * This function will return the first group that matches the gid_list
+ */
+function supportgroups_taxonomy_get_a_group( $gid_list, $groupArray){
+  $group = array();
+  foreach( $gid_list as $key=>$value){
+    // $value should contain the gid
+    // If this array exist
+    if( isset($groupArray[$value]) ){
+
+      // loop through taxonomy array
+      for( $i = 0; $i < $groupArray[$value]['taxonomy']; $i++){
+        // check to see the user has joined in any of the groups in the taxonomy list
+        if( !supportgroups_taxonomy_is_subscribed( $groupArray[$value]['taxonomy'][$i]['nid'], $gid_list ) ){
+          $group[] = array( 'nid' => $groupArray[$value]['taxonomy'][$i]['nid'] ,
+             'title' => $groupArray[$value]['taxonomy'][$i]['title'] );
+          break;
+        }
+      }
+
+    }
+    // if a group is chosen, then greak the loop
+    if(count($group) > 0){
+      break;
+    }
+  }
+  return $group;
+}
+
+
+/**
+ * Check to see if the user is subscribed in this taxonomy
+ */
+function supportgroups_taxonomy_is_subscribed( $gid, $gid_list ){
+  // Loop through $gid_list and see if the user is subscribed for this group
+  foreach($gid_list as $key=>$value){
+    if( $gid == $value ){
+      // return true if user is subscribed to a group
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ *  This function will return the node nids of groups the user has joined
+ */
+function supportgroups_taxonomy_usergroups( $uid ){
+  $group_nids = array();
+  $result = db_query("SELECT gid FROM {og_membership}
+    WHERE entity_type = 'user' AND etid = :uid", array( ':uid' => $uid) );
+  foreach( $result as $row ){
+    $group_nids[] = $row->gid;
+  }
+  return $group_nids;
+}
+
+/**
+ * Ajax callback to join group
+ */
+function _supportgroups_taxonomy_ajax_join( $nid = 0){
+  global $user;
+  $message = '';
+  $status = 'false';
+  $is_group = false;
+  $content = '';
+  $url = '';
+  // check to see that this is a group
+  $result = db_query("SELECT nid FROM {node}
+    WHERE type='set_up_group' AND nid = :nid", array( ':nid' => $nid ) );
+  foreach( $result as $row ){
+    $is_group = true;
+  }
+
+  if( $user->uid > 0 && $nid > 0  && $is_group ){
+    // if the user and nid is > 0 , then join the user to the group
+    // need to add validation to make sure the node is a group
+//    $node = node_load($nid);
+
+    og_group('node', $nid, array('entity' => $user->uid));
+
+    // create the url to link to the group
+    $url = url('node/'.$nid, array( 'absolute' => true) );
+
+    // recreate block
+    // clear the cache
+    $cid = supportgroups_taxonomy_cache_get();
+    cache_clear_all( $cid, SUPPORTGROUPS_TAX_CACHE_TABLE );
+    // Retrieve the group to show
+    $groupArray = supportgroups_taxonomy_get_group();
+    cache_set( $cid, $groupArray, SUPPORTGROUPS_TAX_CACHE_TABLE, strtotime(SUPPORTGROUPS_TAX_CACHE_TTL));
+    $content = theme( 'group_taxonomy', array( 'group' => $groupArray) );
+    $status = 'true';
+    
+  }
+  $data = array(
+    'status' => $status,
+    'message' => $message,
+    'content' => $content,
+    'url' => $url
+  );
+  
+  drupal_json_output($data);
+  drupal_exit();
+}
+
+/**
+ *  Retrieve the cache cid for the group taxonomy block
+ *
+ */
+function supportgroups_taxonomy_cache_get( ){
+  global $user;
+  return SUPPORTGROUPS_TAX_CACHE_CID.$user->uid;
+}

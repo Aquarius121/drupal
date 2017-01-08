@@ -1,0 +1,30 @@
+<?php
+/*
+*  This function will add arguments to the listed views
+*/
+function custom_viewarguments_views_pre_view(&$view, &$display_id, &$args) {
+  // This view will appear in the Discussion pages
+  if ( ($view->name == 'most_commented' && $display_id == 'block_2')
+    || ($view->name == 'most_commented' && $display_id == 'block_3')
+    || ($view->name == 'most_commented' && $display_id == 'block_4')
+     ) {
+    // We will create a static variable that will store the group Id.
+    // So we will only use node_load once
+    static $argument;
+    // If the argument has the group ID, then we can assign it to $gid
+    if(isset($argument)){
+      $gid = $argument;
+    }
+    else{
+      // If $argument doesn't exist, then we need to run node_load to find the group ID
+      $node = node_load(arg(1));
+      $gid = '';
+      // Check to see if the node has the og_group_ref field
+      if( isset($node->og_group_ref) ){
+        $gid = $node->og_group_ref['und'][0]['target_id'];
+      }
+      $argument = $gid;
+    }
+    $args[] = $gid;
+  }
+}

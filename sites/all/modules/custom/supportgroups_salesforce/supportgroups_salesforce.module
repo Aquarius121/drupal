@@ -1,0 +1,260 @@
+<?php
+
+// setting upper limit to match the queuiung mecahnism for the salesforce_pull_limit var
+define('SUPPORTGROUPS_SALESFORCE_CRON_MAX', variable_get('supportgroups_salesforce_cron_max', 50));
+define('SUPPORTGROUPS_SALESFORCE_NEW_CRON_MAX', variable_get('supportgroups_salesforce_cron_max', 10));
+
+define('SUPPORTGROUPS_SALESFORCE_CRON_FILTER_BY_TIME_AGO', (time() - (3600 * 24 * 2)));
+
+/**
+ * Implements hook_cronapi
+ */
+
+function supportgroups_salesforce_cronapi($op, $job = NULL) {
+  $items['supportgroups_salesforce_cron'] = array(
+      'description' => 'Select users to update points and sync to salesforce',
+      'rule' => '*/5 * * * *',
+      'callback' => '_supportgroups_salesforce_cron',
+  );
+  $items['supportgroups_salesforce_new_cron'] = array(
+      'description' => 'Select users to update points and sync to salesforce',
+      'rule' => '*/5 * * * *',
+      'callback' => '_supportgroups_salesforce_new_cron',
+  );
+  return $items;
+}
+
+/**
+ * Helper function to allow devel to access cron
+ */
+function _supportgroups_salesforce_cron() {
+  // set the global for the run so we can use hook_salesforce_push_entity_allowed to prevent sync
+  global $sf_cron;
+  $sf_cron = true;
+
+  // select the the lastest X users who have not been updated in the past 2 days and have accessed the site most recently
+  // this keeps users who are very active out of the cron task for 48 hours and chews down the remaining users in the most recent order
+  // start query object
+  $query = db_select('users', 'u');
+  
+  // joing the saleforce table to get the last sync date
+  $query->leftJoin('salesforce_mapping_object', 'smo', 'u.uid = smo.entity_id');
+
+  // add the desired returned fields
+  $query->fields('u', array('uid', 'login', 'access'));
+  $query->fields('smo', array('last_sync'));
+
+  // return only users that have not been synced since the last period
+  $query->condition('smo.last_sync', SUPPORTGROUPS_SALESFORCE_CRON_FILTER_BY_TIME_AGO, '<');
+
+  // sync to salesforce on the 50 latest users in the list
+  $query->orderBy('u.access', 'DESC');
+
+  // limit the return
+  $query->range(0, SUPPORTGROUPS_SALESFORCE_CRON_MAX);
+
+  $result = $query->execute();
+
+  while($record = $result->fetchAssoc()) {
+    // load the specific entity
+    $user = user_load($record['uid']);
+
+    // push the user
+    if(is_object($user)) {
+      salesforce_push_entity_crud('user', $user, 2);
+    }
+  }
+}
+
+/**
+ * Callback function for hook_cronapi through Elysia cron; also allows devel to access cron
+ */
+function _supportgroups_salesforce_new_cron() {
+  // set the global for the run so we can use hook_salesforce_push_entity_allowed to prevent sync
+  global $sf_cron;
+  $sf_cron = true;
+
+  $query = db_select('users', 'u');
+  
+  // joing the saleforce table to get the last sync date
+  $query->leftJoin('salesforce_mapping_object', 'smo', 'u.uid = smo.entity_id');
+
+  // add the desired returned fields
+  $query->fields('u', array('uid'));
+  $query->fields('smo', array('entity_id'));
+
+  // return only users that do not have a record in the user_points table
+  $query->isNull('smo.entity_id');
+
+  // do not use the 0 uid
+  $query->condition('u.uid', 0, '>');
+
+  // sync to salesforce on the newest users in the list
+  $query->orderBy('u.uid', 'ASC');
+
+  // limit the return
+  $query->range(0, SUPPORTGROUPS_SALESFORCE_NEW_CRON_MAX);
+
+  $result = $query->execute();
+
+  while($record = $result->fetchAssoc()) {
+    // load the specific entity
+    $user = user_load($record['uid']);
+
+    // push the user
+    if(is_object($user)) {
+      salesforce_push_entity_crud('user', $user, 1);
+    }
+  }
+}
+
+/**
+ * Implements hook_token_info
+ **/
+function salesforce_user_token_info() {
+  // load all the token includes
+  _supportgroups_salesforce_load_includes();
+
+  $info = array(
+    'tokens' => array(),
+  );
+
+  // add user tokens
+  $info['tokens']['user'] = _supportgroups_salesforce_user_token_info();
+
+  return $info;
+}
+
+
+/**
+ * Implements hook_tokens
+ **/
+function supportgroups_salesforce_tokens($type, $tokens, array $data = array(), array $options = array()) {
+
+  $replacements = array();
+
+  if ($type == 'user' && !empty($data['user'])) {
+    _supportgroups_salesforce_load_include('user');
+    $replacements += _supportgroups_salesforce_user_tokens($tokens, $data, $options);
+  }
+
+  return $replacements;
+}
+
+function supportgroups_salesforce_salesforce_push_entity_allowed($entity_type, $entity, $sf_sync_trigger) {
+  // only allow the sync to run if we are deleting the entity or if this is a cron run
+  global $sf_cron;
+  if ($sf_sync_trigger == 4 || $sf_cron) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Implements hook_salesforce_push_params_alter
+ * Helps to clean errors in Salesforce API when incorrect value is sent
+ * @param array $params
+ * @param array $mapping
+ * @param array $entity_wrapper
+ */
+function supportgroups_salesforce_salesforce_push_params_alter(&$params, $mapping, $entity_wrapper) {
+
+ if(isset($params['Birthday__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Birthday__c', $mapping->field_mappings);
+    if(empty($params['Birthday__c']) || $params['Birthday__c'] == $key) {
+      $params['Birthday__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Login__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Login__c', $mapping->field_mappings);
+    if(empty($params['Last_Login__c']) || $params['Last_Login__c'] == $key) {
+      $params['Last_Login__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Registered__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Registered__c', $mapping->field_mappings);
+    if(empty($params['Registered__c']) || $params['Registered__c'] == $key) {
+      $params['Registered__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Supports_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Supports_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Supports_Time__c']) || $params['Last_Supports_Time__c'] == $key) {
+      $params['Last_Supports_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Supported_By_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Supported_By_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Supported_By_Time__c']) || $params['Last_Supported_By_Time__c'] == $key) {
+      $params['Last_Supported_By_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Authored_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Authored_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Authored_Time__c']) || $params['Last_Authored_Time__c'] == $key) {
+      $params['Last_Authored_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Comment_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Comment_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Comment_Time__c']) || $params['Last_Comment_Time__c'] == $key) {
+      $params['Last_Comment_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Heart_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Heart_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Heart_Time__c']) || $params['Last_Heart_Time__c'] == $key) {
+      $params['Last_Heart_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Private_Message_Time__c'])) {
+    $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Private_Message_Time__c', $mapping->field_mappings);
+    if(empty($params['Last_Private_Message_Time__c']) || $params['Last_Private_Message_Time__c'] == $key) {
+      $params['Last_Private_Message_Time__c'] = NULL;
+    }
+  }
+
+  if(isset($params['Last_Access__c'])) {
+   $key = _supportgroups_salesforce_dig_for_drupal_key('Last_Access__c', $mapping->field_mappings);
+   if(empty($params['Last_Access__c']) || $params['Last_Access__c'] == $key) {
+    $params['Last_Access__c'] = NULL;
+   }
+  }
+}
+
+function _supportgroups_salesforce_dig_for_drupal_key($salesforce_key, $mappings) {
+  static $drupal_key = array();
+
+  foreach($mappings as $mapping) {
+    if($mapping['salesforce_field']['name'] == $salesforce_key) {
+      $drupal_key[$salesforce_key] = $mapping['drupal_field']['fieldmap_value'];
+      break;
+    }
+  }
+
+  return $drupal_key[$salesforce_key];
+}
+
+function _supportgroups_salesforce_load_includes() {
+  $includes = array('user');
+
+  foreach($includes as $include) {
+    _supportgroups_salesforce_load_include($include);
+  }
+}
+
+function _supportgroups_salesforce_load_include($name = '') {
+  if(!empty($name)) {
+    $file = 'includes/supportgroups_salesforce.' . $name . '.tokens';
+    module_load_include('inc', 'supportgroups_salesforce', $file);
+  }
+}

@@ -1,0 +1,70 @@
+<?php
+// $Id$
+/**
+ * @file
+ *
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function supportgroups_user_schema() {
+  $schema = array();
+
+  $schema['supportgroups_user'] = array(
+    'description' => 'Defines the user badges themselves (image, weight etc.)',
+    'fields' => array(
+      'uid' => array(
+        'description' => 'User ID',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'notifications_unseen' => array(
+        'description' => 'Unseen Notifications',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'timestamp' => array(
+        'description' => 'Time of reset',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('uid'),
+  );
+  return $schema;
+}
+/**
+ * Implementation of hook_update_N().
+ */
+function supportgroups_user_update_7000() {
+  $ret = array();
+
+  module_load_include('inc', 'comment_notify', 'comment_notify');
+  $query = 'SELECT uid FROM {users} WHERE uid > 0';
+  $result = db_query($query, array());
+  foreach ($result as $user) {
+
+
+    comment_notify_set_user_notification_setting($user->uid, 0, 0);
+  }
+
+  $ret[] = array(
+    'success' => TRUE,
+    'query' => 'Set notifications to FALSE for all existing users',
+  );
+  return $ret;
+}
+
+/**
+ * Implementation of hook_update_N().
+ * Add table for Notifications
+ */
+function supportgroups_user_update_7001() {
+  drupal_install_schema('supportgroups_user');
+
+}
+

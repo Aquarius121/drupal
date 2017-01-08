@@ -1,0 +1,10 @@
+;$Id$
+name = Supportgroups 'me' Aliases functionality
+description = Me aliases are way out of control. Let's tame them.
+package = Support Groups
+core = 7.x
+
+dependencies[] = me
+
+files[] = supportgroups_me.install
+files[] = supportgroups_me.module

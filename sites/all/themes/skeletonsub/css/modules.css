@@ -1,0 +1,37 @@
+/* STYLES FOR MODULES DELETE THIS */
+
+/*reusable list components */
+ul .time {color:#999999;}
+ul .member {font-weight:bold;}
+
+/* sg live right column */
+#sglive a {
+	color:#333333;}
+	.liveuser {font-weight:bold;}
+
+/* ol with circled numbers for Most Discussed right col */
+ol.circled {
+    display: block;
+    padding: 0 0 0 26px;
+    list-style: none;
+    overflow: hidden;
+    counter-reset: numList; }
+	ol.circled li {
+		margin:0 0 14px 0;
+		padding-left:12px;
+		position: relative; }
+		ol.circled li:before {
+			counter-increment: numList;
+			content: counter(numList);
+			float: left;
+			position: absolute;
+			left: -26px;
+			text-align: center;
+			color:white;
+			line-height: 24px;
+			width: 24px;
+			height: 24px;
+			background: #4ea45b;
+			-moz-border-radius: 999px;
+			border-radius: 999px; }
+

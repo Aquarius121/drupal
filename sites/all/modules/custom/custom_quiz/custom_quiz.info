@@ -1,0 +1,4 @@
+name = Custom Quiz
+description = This module will create a block that will contain the custom quiz
+core = 7.x
+package = "Custom Code"

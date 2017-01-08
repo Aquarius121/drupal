@@ -1,0 +1,8 @@
+name = Private Message Relationship
+description = This module will allow users to private message users who are supporting you
+core = 7.x
+package = Support Groups Features
+version = "7.x-1.x"
+
+dependencies[] = supportgroups_pm
+dependencies[] = user_relationships

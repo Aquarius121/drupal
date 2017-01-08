@@ -1,0 +1,12 @@
+name = Notifications Mailing List
+description = Mailing list features
+package = "Notifications"
+dependencies[] = notifications_content
+dependencies[] = messaging_template
+
+; Information added by fserver
+core = "7.x"
+datestamp = "1320603213"
+project = "notifications_ml"
+project status url = "http://code.danepowell.com/fserver"
+version = "7.x-1.0"

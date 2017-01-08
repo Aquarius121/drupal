@@ -1,0 +1,13 @@
+/* Group details at top of groups pages */
+.view-group-description {
+	padding-bottom:1.0em;
+	font-size:1.5em; }
+.view-group-description div {
+	display:inline-block;
+	margin-right:0.7em; }
+
+.view-group-description .greenbutton {
+	padding:0.1em 2.0em 0.2em 2.0em; }
+.view-group-description .greenbutton a {
+	color:white; }
+.views-field-name a {color:#239948; }

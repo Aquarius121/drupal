@@ -1,0 +1,60 @@
+<?php
+global $spam;
+// this is the list of blacklisted words  
+$spam = array("motherfucker","fuck","gook","a-rab","camel jockey","fucker","suck dick","suck cock","asshole","ass hole","cunt","nigger","kike","bitch","jew lover","cocksucker","cock sucker","tits","pussy","beaner","fatass","suck my cock","suck my dick","slut","whore"
+);
+
+/**
+ *  Implementation of hook form alter
+ */
+function custom_spamfilter_form_alter(&$form, $form_state, $form_id) {
+  // add an extra validate function for comments
+  if($form_id == 'comment_node_group_post_form'){
+    $form['#validate'][] = 'custom_spamfilter_custom_validation_function';
+  }
+}       
+
+function custom_spamfilter_node_validate( $node, $form, &$form_state ) {
+  global $spam;
+  // Check to see that this is a group post
+  if($node->type == 'group_post' ){
+    $title = strtolower($form_state['values']['title']);
+    $count = 0;
+    // Go through all of the keys and check to see if there is profanity in the title
+    foreach($spam as $key){
+      if (strpos($title,$key) !== false) {
+        $count = 1;
+        break;
+      }
+    }
+    // Go through all keys to see if there is profanity in the body
+    $body = strtolower($form_state['values']['body']['und']['0']['value']);
+    foreach($spam as $key){
+      if (strpos($body,$key) !== false) {
+        //print $key;
+        $count = 1;        
+        break;
+      }
+    }
+    // if there is profanity, then return an error
+    if($count >= 1){
+      form_set_error('spamfilter', t('Your post cannot be completed because we believe that it contains profanity. Please edit your message and re-post.'));
+    }
+  }
+}// end of spamfilter_nodeapi
+
+function custom_spamfilter_custom_validation_function($form,&$form_state){
+  global $spam;    
+  $body = strtolower($form_state['values']['comment_body']['und'][0]['value']);
+  $count = 0;
+  foreach($spam as $key){
+    if (strpos($body,$key) !== false) {
+      $count = 1;
+      break;
+    }
+  }
+  if($count >= 1){        
+    form_set_error('spamfilter', t('Your post cannot be completed because we believe that it contains profanity. Please edit your message and re-post.'));
+  }
+}// end of spamfilter_custom-validation
+

@@ -1,0 +1,92 @@
+<?php
+  define( 'CUSTOM_TOPPOINTS_CACHE_PREFIX', 'mod-');
+  define('CUSTOM_TOPPOINTS_CACHE_TABLE', 'cache');
+  define('CUSTOM_TOPPOINTS_CACHE_CID', 'custom_toppoints_block');
+
+
+  /**
+   *  This function will contain the block info
+   */
+  function custom_toppoints_block_info(){
+    $blocks = array();
+    // Create the information about the block. This will show up in admin/structure/blocks
+    $blocks['top_userpoints'] = array(
+      'info' => t('Top supporters of Day (custom_top_points_module)'),
+    );
+    return $blocks;
+  }
+
+  /**
+   *  This function will display the block that will show the top user points
+   */
+  function custom_toppoints_block_view( $delta = ''){
+    $blocks = array();
+    switch( $delta ){
+      case 'top_userpoints' :
+        // Helper function to produce the content
+        $blocks['content'] = top_points_block();
+        break;
+    }
+    return $blocks;
+  }
+
+  /**
+   * This is a helper function to produce the top user points block
+   */
+  function top_points_block(){
+    // Check to see if the block is stored in cache
+    $cached = cache_get(CUSTOM_TOPPOINTS_CACHE_CID, CUSTOM_TOPPOINTS_CACHE_TABLE);
+    if($cached){
+      $content = $cached->data;
+    }
+    // If not stored in cache, we will need to produce the output
+    else{
+      // This function will return the query that pulls the top ten contributors today
+      $result = custom_toppoints_query();
+      // This function will return the output
+      $content = custom_toppoints_display( $result );
+      // This function will wrap the top contributor data in template
+      $content = theme('topPoints', array( 'topPoints' => $content));
+      // cache the block
+      cache_set( CUSTOM_TOPPOINTS_CACHE_CID, $content,CUSTOM_TOPPOINTS_CACHE_TABLE, strtotime("+1 hour"));
+    }
+    return $content;
+  }
+
+  /**
+   * This function uses templates to theme the content
+   */
+  function custom_toppoints_theme(){
+    // topPoints themes the entire block
+    // topPointsItem themes the individual records
+    return array(
+      'topPoints' => array( 'arguments' => array( 'topPoints' => NULL), 'template' => 'topPoints'),
+      'topPointsItem' => array( 'arguments' => array('name' => NULL, 'uid' => NULL, 'points' => NULL, 'url' => NULL), 'template' => 'topPointsItem')
+    );
+  }
+
+  /**
+   * This function will return the query for the top contributors
+   */
+  function custom_toppoints_query(){
+    // This query will pull in the top ten contributors of the day
+    // I need to change the date so it pulls things within a day.
+    $result = db_query("select u.name as name, u.uid as uid, sum(points) as points from {userpoints_txn} p inner join {users} u on p.uid = u.uid
+    where time_stamp > :start AND time_stamp <= :end group by p.uid order by points desc LIMIT 10", array( ':start' =>  strtotime('-1 day') , ':end' => time() ) );
+    return $result;
+  }
+
+  /**
+   *  This function will return output.
+   */
+  function custom_toppoints_display( $result ){
+    $content = '';
+    // This foreach look will add a theme to each row
+    // I have not created the templates for this yet
+    foreach( $result as $row){
+      // Creates the url to the user's profile page
+      $url = url('user/' .$row->uid, array('absolute' => TRUE) );
+      $content .= theme('topPointsItem', array( 'name' => $row->name, 'uid' => $row->uid, 'points' => $row->points, 'url' => $url));
+    }
+    return $content;
+  }

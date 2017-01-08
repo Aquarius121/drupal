@@ -1,0 +1,110 @@
+<?php
+/**
+ * @file
+ * Code for the SupportGroups Flags feature.
+ */
+
+include_once 'supportgroups_flags.features.inc';
+
+function supportgroups_flags_menu() {
+  $items = array();
+
+  $items['ajax/sg_f/unflag'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: get recent activity since X',
+    'page callback' => '_supportgroups_feed_ajax_unflag',
+    'file' => 'supportgroups_flags.pages.inc',
+    'type' => MENU_CALLBACK
+  );
+ return $items;
+}
+/**
+ * Implementation of flag preprocess function
+ *
+ * The $variables array initially contains the following arguments:
+ * - $flag
+ * - $action
+ * - $content_id
+ * - $after_flagging
+ *
+ * See 'flag.tpl.php' for their documentation.
+ */
+function supportgroups_flags_preprocess_flag(&$vars) {
+  global $user;
+  drupal_add_js(drupal_get_path('module', 'supportgroups_flags') . '/js/supportgroups_flags.js');
+
+  // Add attributes to unflag link to help with decrement of unseen value
+  if ($vars['action'] == 'unflag' && ($vars['flag']->name == 'like' || $vars['flag']->name == 'like_comments' )) {
+
+    $content_type = $vars['flag']->content_type;
+    $content_id = $vars['content_id'];
+    $author_uid = supportgroups_user_author_uid($content_type, $content_id);
+
+    $timestamp = db_query("SELECT timestamp FROM {flag_content}
+                                 WHERE content_id=:content_id
+                                 AND content_type=:content_type
+                                 AND uid=:uid",
+      array(
+        ':content_id' => $content_id,
+        ':content_type' => $content_type,
+        ':uid' => $user->uid
+      ))->fetchField(0);
+
+    $vars['attributes_array'] = array(
+      'uid' => $author_uid,
+      'timestamp' => $timestamp
+    );
+  }
+
+  // Check to see if the flag is a heart icon
+  if( $vars['link_text'] == '&hearts;' ){
+    // Get the content type of the flag
+    $type = $vars['flag']->content_type;
+    // Get the number of likes for this type
+    // TRUE means that we will be pulling the data from the db
+    $countArray = flag_get_counts( $type, $vars['content_id'], TRUE);
+    // If a value exist, then retrieve that value
+    if( count($countArray) != 0 ){
+      $count = array_shift($countArray);
+      // Add a class if the heart icon has a value greater than 0
+      $vars['flag_wrapper_classes'] .= " liked";
+    }
+    // Default the value to 0
+    else{
+      $count = 0;
+    }
+    // Append the value of the counter
+    $vars['link_text'] = $vars['link_text'].$count;
+  }
+}
+
+/**
+ * Implements hook_flag
+ * See supportgroups_flags_preprocess_flag and supportgroups_flags.js for unflag process
+ * @param $op
+ * @param $flag
+ * @param $content_id
+ * @param $account
+ * @param $fcid
+ */
+function supportgroups_flags_flag($op, $flag, $content_id, $account, $fcid) {
+  // Only applies to like flags
+  if ($flag->name != 'like' && $flag->name != 'like_comments') {
+    return;
+  }
+  // Update unseen notifications when flagged
+  $entity_type = $flag->content_type;
+  $author_uid = supportgroups_user_author_uid($entity_type, $content_id);
+  $notifications_unseen = supportgroups_user_get_notifications_unseen($author_uid);
+  if (empty($notifications_unseen)) {
+    if ($op == 'flag') {
+      supportgroups_user_insert_notifications_unseen($author_uid);
+    }
+  }
+  else {
+    if ($op == 'flag') {
+      supportgroups_user_update_notifications_unseen($author_uid);
+    }
+  }
+}
+

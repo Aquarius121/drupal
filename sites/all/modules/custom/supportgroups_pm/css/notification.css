@@ -1,0 +1,96 @@
+/* PRIVATE MESSAGES MODULE */
+/* header notifications and mssg list */
+
+#block-supportgroups-pm-pm-notifications {
+	position:absolute;
+	top:8px;
+	left:290px; }
+
+	#notifications-icon {
+		background:url(../images/icon-mssg-notification.png) no-repeat top left;
+		width:35px;
+		height:33px; }
+		#notifications-icon .alert {
+			background: red;
+			border-radius: 0.8em;
+			-moz-border-radius: 0.8em;
+			-webkit-border-radius: 0.8em;
+			text-align: center;
+			color: #ffffff;
+			display: inline-block;
+			line-height: 1.6em;
+			margin-right: 5px;
+			width: 1.6em; }
+
+#notifications-messagelist {
+	margin-left:28px; }
+div#notifications-messagelist {
+	display:none; }
+
+@media only screen and (max-width: 767px) {
+	/* move notification lists to left for small screen */
+	#notifications-messagelist {
+	margin-left:-50px; }
+}
+
+
+#navigation #notifications-pm ul {
+	list-style:none;
+	padding:0.5em 0.5em 0 0.5em;
+	background:white;
+	border-top: 2px solid #dddddd;
+	border-right: 4px solid #dddddd;
+	border-left: 2px solid #dddddd; }
+	#navigation #notifications-pm ul li {
+		clear:left;
+		padding:0.5em;
+		border-bottom:1px solid #cccccc;
+		min-height:50px;
+		height:auto !important;
+		height:50px;
+		width:250px; }
+		#notifications-pm ul li.is_new {
+			background:#eeeeee; }
+	#navigation #notifications-pm li:hover {
+		background:#f0f0e8; }
+	#navigation #notifications-pm ul li a {
+		font-weight:normal;
+		color:#444444;
+		padding:0; }
+	#notifications-pm img {
+		float:left;
+		width:50px;
+		height:50px; }
+	#notifications-pm .member {
+		display:inline-block;
+		margin-left:7px;
+		font-weight:bold; }
+	#notifications-pm .time {
+		display:inline-block;
+		color:#999999;
+		font-size:0.8em;
+		float:right; }
+	#notifications-pm .teaser {
+		display:block;
+		padding-top:0.2em;
+		margin-left:60px; }
+
+#notifications-messagelist .see-all {
+	text-align:center;
+	font-weight:bold;
+	background:white;
+	border-right: 4px solid #dddddd;
+	border-left: 2px solid #dddddd;
+	border-bottom:4px solid #dddddd;
+	border-bottom-left-radius:7px;
+	border-bottom-right-radius:7px;
+	padding:0.2em 0;
+	clear:left;
+	height:20px; }
+	.see-all a {color:#239A20; }
+
+/* slide pm notifications icon to left for smaller screen */
+@media only screen and (max-width: 767px) {
+	#block-supportgroups-pm-pm-notifications {
+		left:80px; }
+}

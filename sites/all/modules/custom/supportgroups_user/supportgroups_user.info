@@ -1,0 +1,9 @@
+name = Supportgroups User
+description = Module to govern user features like registration
+core = 7.x
+package = Support Groups Features
+dependencies[] = ctools
+dependencies[] = strongarm
+features[ctools][] = strongarm:strongarm:1
+features[features_api][] = api:2
+features[variable][] = site_frontpage

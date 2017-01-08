@@ -1,0 +1,4 @@
+name = Support Groups Subdomain
+description = Clone of Sub Domain Field: Assigns a subdomain to an entity, by which the entity will be accessible
+core = 7.x
+

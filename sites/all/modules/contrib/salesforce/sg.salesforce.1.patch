@@ -1,0 +1,40 @@
+From 4d84100600a9fb9ea5fc47c052e1476faa070583 Mon Sep 17 00:00:00 2001
+From: Steven Rifkin <me@stevenrifkin.com>
+Date: Mon, 10 Mar 2014 15:51:45 -0700
+Subject: [PATCH] refs #1043. Patching module to resolve bugs and allow
+ non-triggerable objects through from salesforce to mappings
+
+---
+ .../modules/salesforce_mapping/includes/salesforce_mapping.admin.inc    | 2 +-
+ .../contrib/salesforce/modules/salesforce_push/salesforce_push.module   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/sites/all/modules/contrib/salesforce/modules/salesforce_mapping/includes/salesforce_mapping.admin.inc b/sites/all/modules/contrib/salesforce/modules/salesforce_mapping/includes/salesforce_mapping.admin.inc
+index 2aed551..faae327 100644
+--- a/sites/all/modules/contrib/salesforce/modules/salesforce_mapping/includes/salesforce_mapping.admin.inc
++++ b/sites/all/modules/contrib/salesforce/modules/salesforce_mapping/includes/salesforce_mapping.admin.inc
+@@ -938,7 +938,7 @@ function _salesforce_mapping_get_salesforce_object_type_options(&$form_state, $i
+     // Note that we're filtering SF object types to a reasonable subset.
+     $sfobjects = $sfapi->objects(array(
+       'updateable' => TRUE,
+-      'triggerable' => TRUE,
++      // 'triggerable' => TRUE,
+     ));
+     $form_state['sfm_storage']['salesforce_object_type'] = $sfobjects;
+   }
+diff --git a/sites/all/modules/contrib/salesforce/modules/salesforce_push/salesforce_push.module b/sites/all/modules/contrib/salesforce/modules/salesforce_push/salesforce_push.module
+index 482d9b1..3c0138d 100644
+--- a/sites/all/modules/contrib/salesforce/modules/salesforce_push/salesforce_push.module
++++ b/sites/all/modules/contrib/salesforce/modules/salesforce_push/salesforce_push.module
+@@ -61,7 +61,7 @@ function salesforce_push_entity_crud($entity_type, $entity, $sf_sync_trigger) {
+   ));
+ 
+   foreach ($mappings as $mapping) {
+-    if ($mapping->sync_triggers & $sf_sync_trigger) {
++    if ($mapping->sync_triggers && $sf_sync_trigger) {
+       if (isset($mapping->push_async) && $mapping->push_async) {
+         $queue = DrupalQueue::get(SALESFORCE_PUSH_QUEUE);
+         $queue->createItem(array(
+-- 
+1.8.3.4 (Apple Git-47)
+

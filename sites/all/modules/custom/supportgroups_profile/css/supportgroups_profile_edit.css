@@ -1,0 +1,85 @@
+#email-settings,
+#newsletter-settings {
+	background:white;
+	padding:0.5em 1.5em;
+	margin-bottom:1.0em;
+	border-radius:10px;
+	box-shadow:2px 2px 5px #dddddd; }
+	#email-settings fieldset {
+		background:none;
+		border:none;
+		padding:0;
+		margin:0;
+		top:inherit; }
+		#email-settings fieldset .fieldset-wrapper {
+			padding:0;
+			margin-top:0; }
+
+/* style headings for 'Picture' and 'About Me' sections */
+#email-settings legend {
+	font-size:1.3em;
+	color:black;
+	position:relative;
+	margin-bottom:0.5em;
+	background:none;
+	border-bottom:1px solid #eeeeee;
+	border-top:none;
+	border-right:none;
+	border-left:none;
+	left:inherit;
+	text-indent:inherit;
+	text-shadow:none;
+	top:inherit; }
+
+/* style form labels */
+#email-settings label {
+	font-weight:normal;
+	line-height:1.8;
+	font-size:1.1em; }
+
+.user-picture {
+	float:left;
+	margin-right:1.0em; }
+
+/* hide default delete picture checkbox */
+.form-item-picture-delete {
+	display:none; }
+
+/* style remove picture button */
+.removepicture {
+	display:inline-block;
+	padding:1.0em 0; }
+	.graybutton {
+		padding:0.3em 0.7em; }
+
+/* pad about me field */
+.form-item-profile-bio textarea.form-textarea {
+	padding-left:60px;
+	border-radius:7px; }
+.grippie {display:none; }
+
+/* hide open/close arrow and remove padding for notification settings header */
+html.js fieldset.collapsible .fieldset-legend {
+	background:none;
+	padding-left:0; }
+	.fieldset-legend a {
+		color:#444444; }
+
+#email-settings .form-type-checkbox .description {
+	margin-left:20px; }
+
+.form-item-comment-notify {
+	margin-left:20px; }
+
+/* username and password heading */
+.name-header {
+	border-bottom:1px solid #eeeeee;
+	margin-bottom:0.5em;}
+
+/* style fields */
+#email-settings input[type="password"],
+#email-settings input[type="text"],
+#email-settings input[type="email"] {
+  border-radius:6px;
+  background:#fafafa;
+  box-shadow:1px 2px 5px #999999; }

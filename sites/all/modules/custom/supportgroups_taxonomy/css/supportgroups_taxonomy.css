@@ -1,0 +1,22 @@
+/* taxonomy module css */
+/* recommending groups to join in sidebar */
+
+#group-taxonomy {
+	text-align:center;
+	padding:0.5em; }
+	#group-taxonomy p {
+		font-size:1.5em; }
+	#sidebar-first #group-taxonomy h2 {
+		margin-top:0;}
+#group-taxonomy .greenbutton {
+	padding:0.5em 1.0em;
+	margin-top:0.5em;
+	display:inline-block; }
+	#group-taxonomy .greenbutton a {
+		color:white; }
+
+#group-taxonomy-response {
+	font-size:1.3em;
+	font-style:italic; }
+	#group-taxonomy-response a {
+		color:green; }

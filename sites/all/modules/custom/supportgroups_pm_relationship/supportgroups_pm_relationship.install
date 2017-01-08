@@ -1,0 +1,47 @@
+<?php
+
+/**
+ * Implementation of hook_update_N().
+ */
+function supportgroups_pm_relationship_update_7100() {
+  $ret = array();
+
+  // Get the timestamp
+  $timestamp = time();
+  // Private message Rtid
+  $rtid = 2;
+  // Fetch all relationship of type 1 (Supporting)
+  $query = 'SELECT rid, requester_id, requestee_id
+   FROM {user_relationships} 
+   WHERE rtid = 1';
+  $result = db_query($query, array());
+  $temp_value = 0;
+  // Loop throught each record
+  foreach ($result as $relationship) {
+    // Create a new entry for the private messaging relationship
+    $insert_query = "INSERT INTO {user_relationships}
+    (rid, requester_id, requestee_id, rtid, approved, created, changed, flags)
+    VALUES
+    (:rid, :requester_id, :requestee_id, :rtid, :approved, :created, :changed, :flags)";
+    $query_values = array(
+      ':rid' => $relationship->rid,
+      // Switch requester and requestee id to match correct private message relationship
+      ':requester_id' => $relationship->requestee_id,
+      ':requestee_id' => $relationship->requester_id,
+      ':rtid' => $rtid,
+      ':approved' => 1,
+      ':created' => $timestamp,
+      ':changed' => $timestamp,
+      ':flags' => 0,
+    );
+    // Insert new private message relationship
+    db_query($insert_query, $query_values);
+    $temp_value++;
+  }
+
+  $ret[] = array(
+    'success' => TRUE,
+    'query' => 'Created ' . $temp_value . ' private messaging relationships',
+  );
+  return $ret;
+}

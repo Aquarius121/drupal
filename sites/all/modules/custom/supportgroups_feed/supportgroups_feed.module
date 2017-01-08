@@ -1,0 +1,3043 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Refactoring of Support Feed functionality
+ * Provides AJAX-queryable list of recent and past activity based on the interests of a given user
+ *
+ * Shows activity (discussions) that:
+ *   Posts made by the Member
+ *   Posts made in the groups to which the Member belongs
+ *   Posts by members whom the Member is Supporting
+ *
+ * Sort order is by most recent event, either new post or comment
+ *
+ * Specific use cases:
+ * a. updating discussions that are already visible on the page
+ *   I am on the supportfeed page
+ *   I am looking at discussion 101
+ *   Another user comments on discussion 101
+ *   the AJAX callback returns that 101 has been updated since this page was loaded
+ *   Discussion 101 is updated in-place, and new comment(s) appear in-place
+ *     If I reload the page, then Discussion 101 will be sorted into its proper chronological place based on when it was updated
+ *   Goal: We just won't move existing discussions around on the page so as to not confuse the end-user
+ *
+ * b. new discussions appearing on supportfeed page
+ *  I am on the supportfeed page
+ *  X new discussion posts / newly commented posts return from AJAX call
+ *  If I am not at the top of the page (e.g. scrolled down and looking at other content), instead of displaying the new posts immediately, insert them into the list, but hide them
+ *  so that posts don't move around on the page without the user's input. Display a "Show New Posts" button which will show the new posts.
+ *  If user is at the top of the page, display new posts immediately, pushing down the other content that was already on the page.
+ *  Twitter is a perfect example of this functionality
+ *
+ *  GENERAL NOTE:
+ *  NOTE: to keep this module as lightweight as possible, we are NOT removing duplicate node IDs from the feed
+ *  theme side should keep track of what node IDs have been displayed and suppress excess ones from being shown. Also, if a given nid shows up in the feed, the
+ *  most recent should always take precedence, and should replace old content on the page. This way we won't have any issues in case an offensive comment is edited or deleted,
+ *  then we won't need to go through the costly operation of actually removing it from the feed and enforcing uniques
+ *
+ *  This module is built to be open-ended in case additional content types need to fit into activity feed, however the drop-in functionality has not been totally vetted
+ *  so this may require some finessing if/when more types are required
+ *    Add additional types to _supportgroups_feed_activity_feed_node_types
+ *    Verify the rest of the logic
+ */
+
+//Constant definitions
+define('SUPPORTGROUPS_FEED_CACHE_PREFIX', 'sg-sf-');
+define('SUPPORTGROUPS_FEED_CACHE_TABLE', 'cache');
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID', SUPPORTGROUPS_FEED_CACHE_PREFIX .'recent-activity');
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID', SUPPORTGROUPS_FEED_CACHE_PREFIX .'notifs');
+
+//Number of records to return initially for the support feed
+define('SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS', 20);
+define('SUPPORTGROUPS_FEED_DEFAULT_NUM_NOTIFICATIONS', variable_get('supportgroups_feed_number_notifications', 8));
+
+define('SUPPORTGROUPS_FEEDS_MIN_RECENT_ACTIVITY', 20);
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_MAX_ITEMS', 300);
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_GROUP_MAX_ITEMS', 50);
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_MAX_ITEMS', 5000);
+
+// threshhold on which to force rebuilding cache for cached activity/notifications/group activity
+define('SUPPORTGROUPS_FEED_MAX_CACHE_AGE', '+6 hours');
+
+// we are randomly warming cache and trimming cache for group nodes-- this is the limit of number of items to do per cron run
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_GROUP_MAX_ITEMS_PER_CRON', 5);
+
+define('SUPPORTGROUPS_FEED_DEFAULT_UPDATE_INTERVAL_FOR_AJAX', variable_get('supportgroups_feed_default_update_interval_for_ajax', 60));
+
+// how many comments to cache along side the activity item
+define('SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY', 3);
+
+// relationship ID for support relationship
+define('SUPPORTGROUPS_FEED_SUPPORT_RELATIONSHIP_ID', 1);
+
+// establish path to module
+define('SUPPORTGROUPS_FEED_WEB_PATH', 'sites/all/modules/custom/supportgroups_feed');
+define('SUPPORTGROUPS_FEED_MODULE_PATH', __DIR__);
+
+define('SUPPORTGROUPS_FEED_INDEX_OVERRIDE', 'nid_');
+
+// Aug 2016 extending this value so that we can get historical notifications
+define('SUPPORTGROUPS_FEED_ACTIVITY_NOTIFICATIONS_TIME_LIMIT', '-90 days');
+
+// Per #1089 set default period
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_DEFAULT_RETURN_PERIOD', '-4 days');
+
+// For user subscriptions and other simple sorted sets, batch the saves to avoid as many roundtrips to Redis
+define('SUPPORTGROUPS_FEED_REDIS_CACHE_BATCH_SIZE', 100);
+define('SUPPORTGROUPS_FEED_RECENT_ACTIVITY_REDIS_BATCH_SIZE', 20);
+
+// SOLR has an issue if there are too many items, so we may need to truncate this list if a given user
+// subscribes to an overly high number of groups and/or supported users
+define('SUPPORTGROUPS_FEED_APACHESOLR_MAX_SUBQUERY_ITEMS', 1000);
+
+// define lock hold times for costly feed rebuilding operations in seconds
+// length of time the lock will be held
+define('SUPPORTGROUPS_FEED_LOCK_HOLD_TIME', 240);
+// max length of time waiting process will wait to proceed-- process checks in 1 second increments
+define('SUPPORTGROUPS_FEED_MAX_LOCK_WAIT_TIME', 40);
+
+require_once 'includes/supportgroups_feed.solr.inc';
+require_once 'includes/supportgroups_feed.cache.inc';
+require_once 'includes/supportgroups_feed.redis.inc';
+
+/**
+ * Implements hook_permission().
+ */
+function supportgroups_feed_permission() {
+  $perms = array(
+    'view full support feed' => array(
+      'title' => t('Allow user to view full support feed'),
+      'description' => t('Ignore user/group follow for this user, and view complete support feed'),
+    ),
+    'administer supportgroups feed' => array(
+      'title' => t('Administer support groups feed'),
+      'description' => t('Allow access to the settings page'),
+    ),
+  );
+  return $perms;
+}
+
+/* ***************************************
+ * Hooks
+ * ***************************************/
+/**
+ * Implementation of hook_menu
+ *
+ * @return multitype:multitype:boolean string unknown  multitype:boolean string multitype:number  unknown  multitype:boolean string
+ */
+function supportgroups_feed_menu() {
+  $items = array();
+  $ajax_file = './includes/supportgroups_feed.ajax.inc';
+  $items['ajax/sg_f/recent_activity'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: get recent activity since X',
+    'page callback' => '_supportgroups_feed_ajax_get_recent_activity',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/past_activity'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: get X items of past activity since before X',
+    'page callback' => '_supportgroups_feed_ajax_get_past_activity',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/group_recent_activity'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: get recent activity since X',
+    'page callback' => '_supportgroups_feed_ajax_get_recent_activity_group',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/group_past_activity'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: get X items of past activity since before X',
+    'page callback' => '_supportgroups_feed_ajax_get_past_activity_group',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/comments'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: all comments for nid',
+    'page callback' => '_supportgroups_feed_ajax_get_comments',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/user_info'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: retrieve user info for multiple users',
+    'page callback' => '_supportgroups_feed_ajax_get_user_info',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/notifications'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: retrieve recent user activity',
+    'page callback' => '_supportgroups_feed_ajax_get_recent_activity_notifications',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/notifications_unseen'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: retrieve unseen notifications count',
+    'page callback' => '_supportgroups_feed_ajax_get_unseen_notifications_count',
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/discussion_remove/%'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: remove discussion node',
+    'page callback' => '_supportgroups_feed_ajax_remove_discussion',
+    'page arguments' => array(3),
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/comment_remove/%'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: remove discussion comment',
+    'page callback' => '_supportgroups_feed_ajax_remove_comment',
+    'page arguments' => array(3),
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/comment_edit/%/%/%'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: edit discussion comment',
+    'page callback' => '_supportgroups_feed_ajax_edit_comment',
+    'page arguments' => array(3,4,5),
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/comment_form/%/%/%'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: add comment form',
+    'page callback' => '_supportgroups_feed_ajax_comment_form',
+    'page arguments' => array(3,4,5),
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+  $items['ajax/sg_f/discussion_edit/%'] = array(
+    'access callback' => TRUE,
+    'title' => 'supportgroups_feed: edit discussion node',
+    'page callback' => '_supportgroups_feed_ajax_edit_discussion',
+    'page arguments' => array(3),
+    'file' => $ajax_file,
+    'type' => MENU_CALLBACK
+  );
+
+  $items['user/%user/supporting'] = array(
+    'title' => 'Support Feed',
+    'page callback' => '_supportgroups_feed_user_supporting',
+    'page arguments' => array(1),
+    'access callback' => 'user_view_access',
+    'access arguments' => array(1),
+    'file' => 'supportgroups_feed.pages.inc',
+    'type' => MENU_LOCAL_TASK
+  );
+  $items['user/%user/supporters'] = array(
+    'title' => 'Supporter Feed',
+    'page callback' => '_supportgroups_feed_user_supporters',
+    'page arguments' => array(1),
+    'access callback' => 'user_view_access',
+    'access arguments' => array(1),
+    'file' => 'supportgroups_feed.pages.inc',
+    'type' => MENU_LOCAL_TASK
+  );
+
+  if (variable_get('supportgroups_support_someone_url', 0)) {
+    $items['support-groups/support-someone'] = array(
+      'access callback' => TRUE,
+      'title' => 'Support Someone listing page',
+      'page callback' => '_supportgroups_feed_support_someone_page',
+      'file' => 'supportgroups_feed.pages.inc',
+      'type' => MENU_CALLBACK
+    );
+  }
+
+  if (variable_get('supportgroups_all_support_groups_url', 0)) {
+    $items['support-groups/all-support-group-posts'] = array(
+      'access callback' => TRUE,
+      'title' => 'All Support Groups Posts',
+      'page callback' => '_supportgroups_feed_all_support_groups_page',
+      'file' => 'supportgroups_feed.pages.inc',
+      'type' => MENU_CALLBACK
+    );
+  }
+  $items['onecomment'] = array(
+    'access callback' => TRUE,
+    'title' => 'One Commented Posts',
+    'page callback' => '_supportgroups_feed_onecomment_page',
+    'file' => 'supportgroups_feed.pages.inc',
+    'type' => MENU_CALLBACK
+  );
+
+  $items['admin/supportgroups/feed'] = array(
+    'access arguments' => array('administer supportgroups feed'),
+    'title' => 'Feed Settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('supportgroups_feed_admin_form'),
+    'file' => 'supportgroups_feed.admin.inc',
+    'type' => MENU_NORMAL_ITEM
+  );
+  return $items;
+}
+
+
+function supportgroups_feed_preprocess_sg_f_user_support_profile(&$variables) {
+  $user = $variables['user'];
+
+  $remove_link = '';
+  $query2 = 'SELECT rid FROM {user_relationships} WHERE rtid = 1 AND approved = 1 AND requestee_id = ' . arg(1) . ' AND requester_id = ' . $user->uid;
+  $result2 = db_query($query2);
+  $supportflag = 0;
+  $rid = 0;
+  foreach( $result2 AS $issupporter) {
+    $supportflag = 1;
+    $rid = $issupporter->rid;
+  }
+
+  if($supportflag) {
+    $remove_link = '<div class="supporter-button"><a class="unroll button gray" href="/user/' . $user->uid . '/relationships/' . $rid . '/remove?destination=user/' . arg(1) . '">Supporting</a></div>';
+  } else {
+    if (_supportgroups_user_request_relationship_allowed()) {
+      $remove_link = '<div class="supporter-button"><a class="button green" href="/relationship/' . arg(1) . '/request/1?destination=user/' . arg(1) . '">Support Me</a></div>';
+    }
+  }
+
+  $variables['remove_link'] = $remove_link;
+
+  $points = userpoints_get_max_points($user->uid);
+  $badges = supportgroups_utility_get_badges($points);
+  $variables['profile_badges'] = $badges;
+
+  $variables['user_picture'] = theme('user_picture', array('account' => $user));
+  $variables['user_name'] = theme('username', array('account' => $user, 'name' => $user->name, 'link_path' => drupal_get_path_alias('user/' . $user->uid)));
+}
+
+
+
+
+/**
+ * Implements hook_preprocess_sg_f_activity_post
+ * @param $variables
+ * @throws \Exception
+ */
+function supportgroups_feed_preprocess_sg_f_activity_post(&$variables) {
+  //TODO We can get the name from the activity cache, but not the picture? Or do we pass the entrire activity into the them?
+  if(isset($variables['activity_node_user'])) {
+    $variables['user_name'] = $variables['activity_node_user']->name;
+
+    $default_filepath = variable_get('user_picture_default', FALSE);
+    $filepath = FALSE;
+    $style = variable_get('user_picture_style', FALSE);
+    $alt = $variables['activity_node_user']->name . '\'s picture';
+
+    if(isset($variables['activity_node_user']->picture)) {
+      $filepath = $variables['activity_node_user']->picture;
+    }
+    elseif($default_filepath) {
+      $filepath = $default_filepath;
+    }
+
+    if($style) {
+      $variables['user_picture'] = theme('image_style', array('style_name' => $style, 'path' => $filepath, 'alt' => $alt, 'title' => $alt));
+    }
+    else {
+      $variables['user_picture'] = theme('image', array('path' => $filepath, 'alt' => $alt, 'title' => $alt));
+    }
+  }
+  else {
+    $user = user_load($variables['activity_node']->uid);
+    $variables['user_name'] = $user->name;
+    $variables['user_picture'] = theme('user_picture', array('account' => $user));
+  }
+
+  $last_comment = end($variables['activity_node']->comments);
+  if($last_comment) {
+    $variables['last_comment_timestamp'] = date('g:i a', $last_comment->changed);
+  }
+
+  $group_names = "";
+  $variables['group_names'] = implode(",", $variables['activity_node']->group_names);
+
+  // render the additional video or images
+  $extra = _supportgroups_node_render_extra($variables['activity_node'], false);
+
+  // strip media links from body
+  $body_w_media = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_IMAGE_REGEX, $variables['activity_node']->body['und'][0]['safe_value']);
+  $body_w_media = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, $body_w_media);
+
+  // trim the output
+  $body_w_media = views_trim_text(array('max_length' => 200, 'word_boundary' => TRUE, 'ellipsis' => TRUE, 'html' => true), $body_w_media) . $extra;
+
+  // replace the custom token in the view with our custom body rendering
+  $variables['body_w_media'] = $body_w_media;
+}
+
+/**
+ * Implementation of hook_comment_insert()
+ *
+ * add commented-on item to activity feed
+ * And increment unseen counter
+ * @param stdClass $comment
+ */
+function supportgroups_feed_comment_insert($comment) {
+  _supportgroups_feed_activity_item_clear_cache($comment->nid);
+  cache_clear_all(_supportgroups_feed_comments_for_nid_cid($comment->nid), SUPPORTGROUPS_FEED_CACHE_TABLE);
+  supportgroups_feed_add_recent_activity($comment->nid);
+
+  // update group activity cache for comment
+  $item = supportgroups_feed_get_activity_item($comment->nid);
+  if(count($item->group_ids)) {
+    foreach($item->group_ids as $gid) {
+      // add activity to the group's recent activity cache
+      supportgroups_feed_add_recent_activity_for_gid($comment->nid, $gid);
+    }
+  }
+
+  // add activity notification to the notifications feed
+  $cache_info = _supportgroups_feed_get_abbreviated_activity_notification_comment($comment);
+  if ($cache_info) {
+    supportgroups_feed_add_recent_activity_notification($cache_info);
+  }
+
+  // Count unseen notifications
+  // We find the author of the node
+  $node_nid = $comment->nid;
+  $node_author = supportgroups_get_node_author($node_nid);
+  // Only increment if author is not commenter
+  if ($comment->uid != $node_author) {
+    supportgroups_user_update_notifications_unseen($node_author);
+  }
+  // And the author of any parent comment
+  if ($comment->pid > 0) {
+    $parent_comment_cid = $comment->pid;
+    $comment_author = supportgroups_get_comment_author($parent_comment_cid);
+    if ($comment->uid != $comment_author) {
+      supportgroups_user_update_notifications_unseen($comment_author);
+    }
+  }
+}
+
+/**
+ * Implementation of hook_comment_update()
+ *
+ * add commented-on item to activity feed
+ * @param stdClass $comment
+ */
+function supportgroups_feed_comment_update($comment) {
+  _supportgroups_feed_activity_item_clear_cache($comment->nid);
+  cache_clear_all(_supportgroups_feed_comments_for_nid_cid($comment->nid), SUPPORTGROUPS_FEED_CACHE_TABLE);
+
+  if ($comment->status) {
+    supportgroups_feed_add_recent_activity($comment->nid);
+
+    // update group activity cache for comment
+    $item = supportgroups_feed_get_activity_item($comment->nid);
+    if(count($item->group_ids)) {
+      foreach($item->group_ids as $gid) {
+        // add activity to the group's recent activity cache
+        supportgroups_feed_add_recent_activity_for_gid($comment->nid, $gid);
+      }
+    }
+
+    // add activity notification to the notifications feed
+    $cache_info = _supportgroups_feed_get_abbreviated_activity_notification_comment($comment);
+    if ($cache_info) {
+      supportgroups_feed_add_recent_activity_notification($cache_info);
+    }
+  }
+}
+
+/**
+ * Implementation of hook_comment_delete()
+ *
+ * add commented-on item to activity feed
+ *
+ * @param stdClass $comment
+ */
+function supportgroups_feed_comment_delete($comment) {
+  $item = supportgroups_feed_get_activity_item($comment->nid);
+  if(count($item->group_ids)) {
+    foreach($item->group_ids as $gid) {
+      // clear group activity cache containing this feed item
+      _supportgroups_feed_clear_redis_cache_for_key_name(_supportgroups_feed_recent_activity_for_gid_cid($gid));
+    }
+  }
+
+  _supportgroups_feed_activity_item_clear_cache($comment->nid);
+  cache_clear_all(_supportgroups_feed_comments_for_nid_cid($comment->nid), SUPPORTGROUPS_FEED_CACHE_TABLE);
+  supportgroups_feed_add_recent_activity($comment->nid);
+
+  // if a comment is deleted, we need to rebuild the notifications feed as well
+  // this function will delete existing notifications and set flag to rebuild
+  if (variable_get('supportgroups_individual_notification_cache', 0)) {
+    $node_author = supportgroups_get_node_author($comment->nid);
+    _supportgroups_feed_clear_redis_cache_for_key_name(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID . '-' .
+      $node_author);
+    // Todo We also need to clear the cache for the parent comment
+
+  }
+  else {
+    _supportgroups_feed_clear_redis_cache_for_key_name(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID);
+
+  }
+}
+
+/**
+ * Implementation of hook_node_update()
+ *
+ * If node is published, add it to the feed
+ *
+ * @param stdClass $node
+ */
+function supportgroups_feed_node_update($node) {
+  // if this is a group node, invalidate the group names cache
+  if ($node->type == 'set_up_group') {
+    cache_clear_all(_supportgroups_feed_group_names_cid(), SUPPORTGROUPS_FEED_CACHE_TABLE);
+  }
+
+  if (!_supportgroups_feed_track_activity_for_content_type($node->type)) {
+    return ;
+  }
+
+  // if node is published add it to the feed
+  if ($node->status) {
+    // reset the cache for the given node
+    _supportgroups_feed_activity_item_clear_cache($node->nid);
+
+    // add activity to the queue
+    supportgroups_feed_add_recent_activity($node->nid);
+  }
+  else {
+    _supportgroups_feed_remove_recent_activity($node->nid);
+  }
+
+  // add group activity to the group queue(s)
+  if(count($node->og_group_ref['und'])) {
+    foreach($node->og_group_ref['und'] as $info) {
+      if ($node->status) {
+        // add activity to the group's recent activity cache
+        supportgroups_feed_add_recent_activity_for_gid($node->nid, $info['target_id']);
+      }
+      else {
+        // remove activity from the group's recent activity cache
+        _supportgroups_feed_remove_recent_activity_for_gid($node->nid, $info['target_id']);
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of hook_node_insert
+ * If node is published and appropriate type, add it to the queue
+ * @param stdClass $node
+ */
+function supportgroups_feed_node_insert($node) {
+  // if this is a group node, invalidate the group names cache
+  if ($node->type == 'set_up_group') {
+    cache_clear_all(_supportgroups_feed_group_names_cid(), SUPPORTGROUPS_FEED_CACHE_TABLE);
+  }
+
+  if (!_supportgroups_feed_track_activity_for_content_type($node->type)) {
+    return ;
+  }
+
+  if ($node->status) {
+    supportgroups_feed_add_recent_activity($node->nid);
+
+    //now add to the group recent activity cache for any selected group(s)
+    if(count($node->og_group_ref['und'])) {
+      foreach($node->og_group_ref['und'] as $info) {
+        // add activity to the group's recent activity cache
+        supportgroups_feed_add_recent_activity_for_gid($node->nid, $info['target_id']);
+        //TODO add activity to the group's cache of node IDs
+
+      }
+    }
+  }
+
+  // all group subscription logic is handled in appropriate hook_og_membership_ACTION
+}
+
+/**
+ * Implementation of hook_node_delete
+ * Remove item from the activity queue
+ *
+ * @param stdClass $node
+ */
+function supportgroups_feed_node_delete($node) {
+  watchdog('supportgroups_feed', 'Node Delete called : '. $node->nid, array(), WATCHDOG_ALERT);
+  // if this is a group node, invalidate the group names cache
+  if ($node->type == 'set_up_group') {
+    cache_clear_all(_supportgroups_feed_group_names_cid(), SUPPORTGROUPS_FEED_CACHE_TABLE);
+  }
+
+  if (!_supportgroups_feed_track_activity_for_content_type($node->type)) {
+    return ;
+  }
+
+  watchdog('supportgroups_feed', 'Node Delete : passed through'. $node->nid, array(), WATCHDOG_ALERT);
+  _supportgroups_feed_remove_recent_activity($node->nid);
+
+  //Group deletion logic is handled by og_membership hooks
+}
+
+/**
+ * Implementation of hook_userpoints
+ * invalidate user object cache after points are added
+ *
+ * @param String $op
+ * @param Array $params
+ */
+function supportgroups_feed_userpoints($op, $params = array()) {
+  if ($op != 'points after') {
+    return ;
+  }
+
+  // invalidate cache for the given user
+  cache_clear_all(_supportgroups_feed_user_info_cid($params['uid']), SUPPORTGROUPS_FEED_CACHE_TABLE);
+}
+
+
+/**
+ * Implementation of hook_user_relationships_insert
+ * invalidate cache for requester and requestee user info
+ */
+function supportgroups_feed_user_relationships_save($relationship) {
+  _supportgroups_feed_clear_user_cache_for_relationship($relationship);
+}
+
+/**
+ * Implementation of hook_user_relationships_delete
+ * @see user_relationships_delete_relationship()
+ *
+ */
+function supportgroups_feed_user_relationships_delete($relationship, $action) {
+  _supportgroups_feed_clear_user_cache_for_relationship($relationship);
+}
+
+
+/**
+ * Implementation of hook_og_membership_insert
+ * Invalidate caches as necessary
+ *
+ * @param stdClass $og_membership
+ */
+function supportgroups_feed_og_membership_insert($og_membership) {
+  _supportgroups_feed_og_membership_helper($og_membership, 'insert');
+}
+
+/**
+ * Implementation of hook_og_membership_delete
+ * Invalidate caches as necessary
+ *
+ * @param stdClass $og_membership
+ */
+function supportgroups_feed_og_membership_delete($og_membership) {
+  watchdog('supportgroups_feed', 'OG Membership Delete : '. $og_membership->etid .', '. $og_membership->gid, array(), WATCHDOG_ALERT);
+  _supportgroups_feed_og_membership_helper($og_membership, 'delete');
+
+  _supportgroups_feed_remove_recent_activity_for_gid($og_membership->etid, $og_membership->gid);
+}
+
+/**
+ * Implementation of hook_flag
+ *
+ * Act on a flagging.
+ *
+ * @param $op
+ *  The operation being performed: one of 'flag' or 'unflag'.
+ * @param $flag
+ *  The flag object.
+ * @param $content_id
+ *  The id of the content (aka entity) the flag is on.
+ * @param $account
+ *  The user account performing the action.
+ * @param $fcid
+ *  The id of the flagging in the {flag_content} table.
+ */
+function supportgroups_feed_flag($op, $flag, $content_id, $account, $fcid) {
+
+  // at this time, we only need to notify of likes, not unlikes, hence filter by $op
+  if ($op == 'flag'){
+    $response = _supportgroups_feed_get_abbreviated_activity_notification_flag_helper($flag, $content_id, $account);
+    if ($response) {
+      // add activity notification to the notifications feed
+      supportgroups_feed_add_recent_activity_notification($response);
+    }
+  }
+
+}
+
+/**
+ * Implements hook_cron().
+ */
+function supportgroups_feed_cron() {
+  // Clear redis every 24 hours until we can fix over-caching problems
+  // Let's only do it when New York is asleep eg 3am
+  $time = time();
+  $day = 60 * 60 * 24;
+  if ($time - $day > variable_get('supportgroups_feed_redis_cache_last_cleared')) {
+    $date = new DateTime("now", new DateTimeZone('America/New_York') );
+    $hour = $date->format('H');
+    // Cron is set to run every 3 hours
+    if ($hour >= 2 && $hour <= 6) {
+      // This is safer
+      $redis = new Redis_Cache('*');
+      $redis->clear('*', TRUE);
+      variable_set('supportgroups_feed_redis_cache_last_cleared', $time);
+      watchdog('supportgroups_feed', 'Flushed redis cache at ' . $date->format('j M, Y  H:i:s'));
+    }
+  }
+}
+
+
+/**
+ * Implementation of hook_theme
+ *
+ */
+function supportgroups_feed_theme($existing, $type, $theme, $path) {
+  $template_path = base_path(). drupal_get_path('module', 'supportgroups_feed') .'/templates/';
+  return array(
+    'sg_f_activity_items' => array(
+      'path' => $template_path,
+      'variables' => array('activity_items' => array(), 'users' => array()),
+      'template' => 'sg-f-activity-items',
+    ),
+    'sg_f_activity_item' => array(
+      'path' => $template_path,
+      'variables' => array('activity_item' => null, 'users' => array(), 'time' => null, 'page' => null),
+      'template' => 'sg-f-activity-item',
+    ),
+    'sg_f_comments' => array(
+      'path' => $template_path,
+      'variables' => array('comments' => array(), 'users' => array(), 'page' => null),
+      'template' => 'sg-f-comments',
+    ),
+    'sg_f_comment' => array(
+      'path' => $template_path,
+      'variables' => array('comment' => null, 'users' => array(), 'page' => null),
+      'template' => 'sg-f-comment',
+    ),
+    'discussion_options' => array(
+      'path' => $template_path,
+      'variables' => array('nid' => null),
+      'template' => 'discussion_options',
+    ),
+    'comment_options' => array(
+      'path' => $template_path,
+      'variables' => array('cid' => null, 'nid' => null, 'pid' => null),
+      'template' => 'comment_options',
+    ),
+    'discussion_body' => array(
+      'path' => $template_path,
+      'variables' => array( 'nid' => null, 'body' => null, 'extra' => null, 'page' => null),
+      'template' => 'discussion_body',
+    ),
+    'discussion_youtube' => array(
+      'path' => $template_path,
+      'variables' => array( 'youtube' => null ),
+      'template' => 'discussion_youtube',
+    ),
+    'more_comments_button' => array(
+      'path' => $template_path,
+      'variables' => array( 'comment_count' => null , 'nid' => null),
+      'template' => 'more_comments_button',
+    ),
+    'anonymous_comment_form' => array(
+      'path' => $template_path,
+      'variables' => array( 'nid' => null , 'pid' => null),
+      'template' => 'anonymous_comment_form',
+    ),
+    'sg_f_notifications' => array(
+      'template' => 'sg-f-notifications',
+      'path' => $template_path,
+    ),
+    'notification_list' => array(
+      'path' => $template_path,
+      'variables' => array( 'username' => null , 'title' => null, 'description' => NULL, 'timestamp' => NULL, 'path' => NULL, 'count' => NULL, 'user_picture' => NULL),
+      'template' => 'notification_list',
+    ),
+    'sg_f_activity_post' => array(
+      'path' => $template_path,
+      'template' => 'sg-f-activity-post',
+      'variables' => array(
+        'activity_type' => null,
+        'activity_node' => null,
+        'activity_node_user' => null
+      ),
+    ),
+    'sg_f_user_support_profile' => array(
+      'path' => $template_path,
+      'template' => 'sg-f-user-support-profile',
+      'variables' => array(
+        'user' => null,
+      ),
+    ),
+  );
+}
+
+/**
+ * hook_preprocess_HOOK for list of activity items
+ * To call:
+ * $data = supportgroups_feed_get_recent_activity_for_uid(NULL, NULL, 20);
+ * $output = theme('sg_f_activity_items',array('activity_items' => $data['activity'], 'users' => $data['users']));
+ *
+ * @param Array $variables
+ */
+function supportgroups_feed_preprocess_sg_f_activity_items(&$vars) {
+  global $user;
+  drupal_add_js(array('currentUser' => $user), 'setting');
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+  $themed_items = array();
+  $vars['items'] = '';
+  foreach ($vars['activity_items'] as $time => $item) {
+
+    $themed_items[] = theme('sg_f_activity_item', array('activity_item' => $item, 'users' => $vars['users'], 'time' => $time));
+  }
+  if($_SERVER['REQUEST_URI'] != '/archive')
+    $vars['items'] = implode('',$themed_items);
+
+  // set $past_activity_link and
+  $vars['recent_activity_link'] = l(t('You have new feed items'), 'javascript:void(0);', array('attributes' => array('id' => 'get-recent-activity', 'onclick' => 'return false;')));
+  $vars['past_activity_link'] = l(t('View More'), 'javascript:void(0);', array('attributes' => array('id' => 'get-past-activity', 'onclick' => 'return false;')));
+}
+
+/**
+ * Hook_preprocess_HOOK for individual activity item
+ *
+ * @param Array $vars
+ */
+function supportgroups_feed_preprocess_sg_f_activity_item(&$vars) {
+  global $user;
+  drupal_add_js(array('currentUser' => $user), 'setting');
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+  $themed_items = array();
+  $vars['comments'] = theme('sg_f_comments', array('comments' => $vars['activity_item']->comments, 'users' => $vars['users'], 'page' => $vars['page'] ));
+
+  // Get user object from the author of the node
+  $current_user = $vars['users'][$vars['activity_item']->uid];
+  // Current user variable
+  $vars['current_user'] = $current_user;
+  // Retrieve the user profile picture
+  if( module_exists('supportgroups_utility') ){
+    $vars['user_picture'] = supportgroups_utility_profile_image($current_user, '50x50');
+    $vars['user_picture_mini'] = supportgroups_utility_profile_image($current_user, '75x75');
+    $vars['user_badges'] = supportgroups_utility_get_badges( $current_user->points);
+
+
+    // Retrieve the date format
+    $vars['date'] = supportgroups_utility_load_date($vars['activity_item']->created);
+
+  }
+
+  //User profile url
+  $vars['profile_url'] = url('user/'.$current_user->uid, array( 'absolute' => TRUE ) );
+
+  // check to see if comment is open and if user has access
+  if( user_access('post comments') && $vars['activity_item']->comment == 2){
+    // add comment form
+    if(module_exists('supportgroups_comment')){
+      // Check to see if the user is logged in
+      if($user->uid > 0){
+        $vars['comment_form'] = _supportgroups_comment_get_comment_form($vars['activity_item']->nid, 0);
+      }
+      else{
+        $vars['comment_form'] = theme('anonymous_comment_form',array('nid' => $vars['activity_item']->nid, 'pid' => 0 )  );
+      }
+    }
+    $vars['comment_status'] = 'comment-open';
+  }
+  else{
+    $vars['comment_status'] = 'comment-closed';
+  }
+
+  // Add the flag item
+  $vars['spam'] = flag_create_link('flag_content', $vars['activity_item']->nid);
+  $vars['hearts'] = flag_create_link('like', $vars['activity_item']->nid);
+  // If the logged in user is the author, then show the edit options
+  if( $user->uid == $current_user->uid || user_access('administer nodes')  ){
+    $vars['discussion_options'] = theme('discussion_options', array( 'nid' => $vars['activity_item']->nid ));
+  }
+
+  // block media for marked groups
+  $blocked_media = false;
+  if(is_array($vars['activity_item']->group_ids)) {
+    foreach($vars['activity_item']->group_ids as $gid) {
+      if(_supportgroups_node_is_group_blocked_form_media($gid)) {
+        $blocked_media = true;
+      }
+    }
+  }
+
+  // preprare the extra markup for media
+  $extra = _supportgroups_node_render_extra($vars['activity_item'], $blocked_media);
+  // strip the unwanted links from the body
+  if(!empty($vars['activity_item']->field_discussion_embed_youtub['und'][0]['input'])) {
+    $video_id = _supportgroups_node_get_video_id_for_youtube_embed($vars['activity_item']->field_discussion_embed_youtub['und'][0]);
+
+    if(!empty($video_id)) {
+      $vars['activity_item']->body['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_YOUTUBE_REGEX, $vars['activity_item']->body['und'][0]['safe_value']);
+    }
+  } elseif(!empty($vars['activity_item']->field_discussion_embed_images['und'][0]['value'])){
+    $vars['activity_item']->body['und'][0]['safe_value'] = _supportgroups_node_strip_links_from_markup(SUPPORTGROUPS_NODE_IMAGE_REGEX, $vars['activity_item']->body['und'][0]['safe_value']);
+  }
+
+  // Get content of discussion
+  $vars['discussion_body'] = theme('discussion_body', array('nid' => $vars['activity_item']->nid ,'body' => $vars['activity_item']->body['und'][0]['safe_value'], 'extra' => $extra, 'page' => $vars['page'] ) );
+
+  // Show more comment button
+  $comment_count = $vars['activity_item']->comment_count;
+
+  if( $comment_count > SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY){
+    $vars['more_comments_button'] = theme('more_comments_button', array( 'comment_count' => format_plural($comment_count - SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY, 'View 1 More Comment', 'View @count More Comments'), 'nid' => $vars['activity_item']->nid) );
+  }
+  // Create button for relationship with the current user
+  if( module_exists('supportgroups_utility') && ($current_user->uid != $user->uid) ){
+    $vars['relationship'] = get_support_relationship_button( $current_user->uid);
+  }
+  else{
+    $vars['relationship'] = '';
+  }
+  // add node url
+  $vars['node_url'] = url( 'node/'.$vars['activity_item']->nid , array('absolute' => TRUE) );
+
+  // add group links
+  $group_array = array();
+  for( $i = 0; $i < count($vars['activity_item']->group_ids) ; $i++){
+    $group_array[] = "<a href='".url('node/'.$vars['activity_item']->group_ids[$i], array( 'absolute' => TRUE ))."'>".$vars['activity_item']->group_names[$i]."</a>";
+    if( $i >= 2 ){
+      break;
+    }
+  }
+  $vars['group_list'] = implode( ', ', $group_array);
+  // Don't allow links to be clicked on
+  if( $user->uid == 0 ){
+    $vars['no_link'] = " onclick='return false;'";
+  }
+}
+
+/**
+ * Hook_preprocess_HOOK for all comments
+ *
+ * @param Array $vars
+ */
+function supportgroups_feed_preprocess_sg_f_comments(&$vars) {
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+
+  $comments = $vars['comments'];
+  $themed_comments = array();
+  //theme individual comments
+  
+  $cuids = array();
+  foreach ($vars['comments'] as $comment) {
+    if(!in_array(intval($comment->uid), $cuids))
+      array_push($cuids, intval($comment->uid));    
+  }
+  foreach ($vars['comments'] as $comment) {
+    $themed_comments[] = theme('sg_f_comment', array('comment' => $comment,'rusers' => supportgroups_feed_get_user_info_multi($cuids), 'users' => $vars['users'], 'page' => $vars['page']));
+  }
+  $vars['comments'] = implode('', $themed_comments);
+}
+
+/**
+ *  Hook_preprocess for activity item content
+ */
+function supportgroups_feed_preprocess_discussion_body( &$vars){
+  global $user;
+  if(isset( $vars['page'] ) && $vars['page'] == 'group_post' ){
+    // If length of body is over 1000 characters, then show a show more button
+    if( strlen($vars['body']) > 1000 ){
+      $vars['length'] = 'showmoretext';
+      $vars['showmore'] = "<span class='showmorebutton' id='showmorebutton-".$vars['nid']."' nid = '".$vars['nid']."'>show more &dArr;</span>";
+    }
+    else{
+      $vars['length'] = 'normaltextlength';
+    }
+  } else{
+    // If length of body is over 250 characters, then show a show more button
+    if( strlen($vars['body']) > 250 ){
+      // show  more button if the user is logged in
+      if($user->uid > 0 ){
+        $vars['length'] = 'showmoretext';
+        $vars['showmore'] = "<span class='showmorebutton' id='showmorebutton-".$vars['nid']."' nid = '".$vars['nid']."'>show more &dArr;</span>";
+      } else{
+        $vars['length'] = 'normaltextlength';
+        $vars['body'] = substr( strip_tags($vars['body']), 0, 250 );
+        $vars['body'] .= '...';
+      }
+    }
+    else{
+      $vars['length'] = 'normaltextlength';
+    }
+  }
+}
+
+/**
+ * Hook_preprocess_HOOK for individual comment
+ *
+ * @param Array $vars
+ */
+function supportgroups_feed_preprocess_sg_f_comment(&$vars) {
+  global $user;
+  drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/supportgroups-feed.css');
+  drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/supportgroups-feed.js');
+  // Get user object from the author of the comment
+  if( module_exists('supportgroups_utility') ){
+    if($vars['rusers'][intval($vars['comment']->uid)]){
+      $vars['user_picture'] = supportgroups_utility_profile_image($vars['rusers'][intval($vars['comment']->uid)], '50x50');
+      $vars['user_picture_mini'] = supportgroups_utility_profile_image($vars['rusers'][intval($vars['comment']->uid)], '75x75');
+    } else {
+      $vars['user_picture'] = supportgroups_utility_profile_image($vars['comment'], '50x50');
+      $vars['user_picture_mini'] = supportgroups_utility_profile_image($vars['comment'], '75x75');
+    }
+    $vars['user_badges'] = supportgroups_utility_get_badges( $vars['comment']->points);
+  }
+  // Retrieve the date format
+  if( module_exists('supportgroups_utility') ){
+    $vars['date'] = supportgroups_utility_load_date($vars['comment']->changed);
+  }
+  $vars['profile_url'] = url('user/'.$vars['comment']->uid, array( 'absolute' => TRUE ) );
+  // tag users if there is a match
+  if(module_exists('supportgroups_comment')){
+    $vars['comment']->comment_body['und'][0]['safe_value'] = supportgroups_comment_tag_user($vars['comment']->comment_body['und'][0]['safe_value']);
+  }
+  // Add flag items
+  $vars['spam'] = flag_create_link('flag_comment', $vars['comment']->cid);
+  $vars['hearts'] = flag_create_link('like_comments', $vars['comment']->cid);
+
+  // If pid = 0, then we will make the current cid the pid
+  // This is needed to make sure that the comment's don't nest
+  // more than 2 times
+  if( $vars['comment']->pid == 0 ){
+    $pid = $vars['comment']->cid;
+    $has_pid = 'reply-to-a-discussion';
+  }
+  else{
+    $pid = $vars['comment']->pid;
+    $has_pid = 'reply-to-a-comment';
+  }
+  // Create variable for pid
+  $vars['pid'] = $pid;
+  // Create has_pid variable
+  $vars['has_pid'] = $has_pid;
+
+  // If the logged in user is the author, then show the edit options
+  if( $user->uid == $vars['comment']->uid || user_access('administer comments') ){
+    $vars['comment_options'] = theme('comment_options', array('cid' => $vars['comment']->cid, 'nid' => $vars['comment']->nid, 'pid' => $pid));
+  }
+  // add comment form assets to the page
+  static $comment_assets_built = false;
+
+  if(!$comment_assets_built) {
+    $comment_assets_built = true;
+
+    if(module_exists('supportgroups_comment')){
+      //Check to see that the user is logged in
+      if( $user->uid > 0 && user_access('post comments')){
+        // we must load the js once
+        $vars['comment_form'] = _supportgroups_comment_get_comment_form($vars['comment']->nid, $pid );
+      }
+    }
+  }
+
+  // If the logged in user is the author, then show the edit options
+  if( $user->uid == $vars['comment']->uid ){
+    // We need to make sure the comment isn't a parent of a comment
+    $not_parent = supportgroups_feed_check_comment_parent( $vars['comment']->cid );
+    if( $not_parent ){
+      $vars['comment_options'] = theme('comment_options', array( 'cid' => $vars['comment']->cid, 'nid' => $vars['comment']->nid, 'pid' => $pid ) );
+    }
+  }
+  // Create button for relationship with the current user
+  if( module_exists('supportgroups_utility')  && ( $vars['comment']->uid != $user->uid) ){
+    $vars['relationship'] = get_support_relationship_button( $vars['comment']->uid);
+  }
+  else{
+    $vars['relationship'] = '';
+  }
+
+
+  if(isset( $vars['page'] ) && $vars['page'] == 'group_post' ){
+    // If length of body is over 1000 characters, then show a show more button
+    if( strlen($vars['comment']->comment_body['und'][0]['safe_value']) > 1000 ){
+      $vars['length'] = 'showmoretext';
+      $vars['body'] = $vars['comment']->comment_body['und'][0]['safe_value'];
+      $vars['showmore'] = "<span class='showmorebutton-comment' id='showmorebutton-comment-".$vars['comment']->cid."'cid = '".$vars['comment']->cid."'>show more &dArr;</span>";
+    }
+    else{
+      $vars['length'] = 'normaltextlength';
+      $vars['body'] = $vars['comment']->comment_body['und'][0]['safe_value'];
+    }
+  } else{
+    // If length of body is over 250 characters, then show a show more button
+    if( strlen($vars['comment']->comment_body['und'][0]['safe_value']) > 250 ){
+      $vars['length'] = 'showmoretext';
+      $vars['body'] = $vars['comment']->comment_body['und'][0]['safe_value'];
+      $vars['showmore'] = "<span class='showmorebutton-comment' id='showmorebutton-comment-".$vars['comment']->cid."'cid = '".$vars['comment']->cid."'>show more &dArr;</span>";
+    }
+    else{
+      $vars['length'] = 'normaltextlength';
+      $vars['body'] = $vars['comment']->comment_body['und'][0]['safe_value'];
+    }
+  }
+  // Don't allow links to be clicked on
+  if( $user->uid == 0 ){
+    $vars['no_link'] = " onclick='return false;'";
+  }
+}
+
+/**
+ * Implements hook_preprocess_sg_f_notifications
+ * @param Array $vars
+ */
+function supportgroups_feed_preprocess_notification_list(&$vars) {
+  // Show the correct text for the count
+  if( $vars['count'] <= 1 ){
+    $vars['count'] = '';
+  }
+  else {
+    // for additional count we only want additional user(s)
+    $count = $vars['count'] - 1;
+    $vars['count'] = ' and '. $count . format_plural($count, ' other ', ' others ');
+  }
+
+  // Show the correct date
+  if( module_exists('supportgroups_utility') ){
+    $vars['date'] = supportgroups_utility_load_date( $vars['timestamp'] );
+  }
+  // Show the correct profile image
+  if( module_exists('supportgroups_utility') ){
+    $vars['picture'] = supportgroups_utility_profile_image( $vars['user_picture'] , '50x50',false );
+  }
+}
+
+/**
+ * Implements hook_preprocess_user_view
+ * @param object $account
+ */
+function supportgroups_feed_user_view($account) {
+  global $user;
+  // if this is any user other than the account owner, set context
+  if(!user_is_logged_in() || $user->uid != $account->uid) {
+    context_set('context', 'profile_other', context_load('profile_other'));
+  } else {
+    // set the title
+    drupal_set_title('Support Feed');
+
+    // set the content for a user viewing their own profile
+    context_set('context', 'profile_me', context_load('profile_me'));
+
+    // initial load of timestamp is 0
+    // per #1089 set to 2 days
+    $from_timestamp = strtotime(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_DEFAULT_RETURN_PERIOD);
+
+    // set number of rows to the default
+    $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS;
+
+    $data = supportgroups_feed_get_recent_activity_for_uid($account->uid, $from_timestamp, 10);
+
+    //TODO set a fail-through in case the given user doesn't have any recent activity (in the recent_activity cache) to pull from past activity
+    //so the page always shows something
+    // make a copy of the nids to remove duplicate content for first page loads
+    $nids = $data['activity_nids'];
+
+    // remove duplicate content for initial page load
+    foreach($data['activity'] as $time => $n) {
+      if(false !== $key = array_search($n->nid, $nids)) { // if the nid is in the array, remove it for future entries
+        // Kevin added array search. NOt sure if it's the best way to handle this.
+        unset($nids[$key]);
+      } else { // else we have seen the nid before and need it removed from initial page load
+        unset($data['activity'][$time]);
+      }
+    }
+
+    $data['interval'] = supportgroups_feed_get_ajax_update_interval();
+
+    $account->content['feed'] = array(
+      '#type' => 'user_profile_item',
+      '#markup' => theme('sg_f_activity_items',array('activity_items' => $data['activity'], 'users' => $data['users'])),
+      '#title' => t("&nbsp;")
+    );
+
+    // add initial Drupal.settings
+    $settings = _supportgroups_feed_init_feed_settings($account->uid, 'user');
+
+    // append existing nids for initial page load and future search for what is already existing on page
+    $settings['supportgroups_feed']['activity']['nids'] = $data['activity_nids'];
+
+    drupal_add_js($settings, 'setting');
+  }
+}
+
+/**
+ * Implementation of hook_block_info
+ * @return array
+ */
+function supportgroups_feed_block_info(){
+  $blocks = array();
+  // This form will display only on the groups pages
+  $blocks['supportgroups_feed_notifications'] = array(
+    'info' => t('Support Groups Activity Item Notifications'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+
+  // replaces "Latest Posts" under discussion nodes
+  $blocks['sg_f_latest_posts'] = array(
+    'info' => t('Support Groups Feed: Latest Posts Unde Discussion'),
+  );
+
+  // replaces "Latest Support Group Posts" for home page
+  $blocks['sg_f_homepage_posts'] = array(
+    'info' => t('Support Groups Feed: Home Page Posts'),
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implementation of hook_block_view
+ * @param mixed $delta
+ * @return array
+ */
+function supportgroups_feed_block_view($delta = ''){
+  $block = array();
+  switch($delta){
+    case 'supportgroups_feed_notifications':
+      global $user;
+      //TODO Need to decide what to render if anything for an anonymous user
+      if(user_is_logged_in()) {
+        // grab the default notification settings
+        $settings = _supportgroups_feed_init_notification_settings($GLOBALS['user']->uid);
+        $settings['supportgroups_feed']['notifications']['unseen'] = supportgroups_user_get_notifications_unseen
+        ($user->uid);
+        // add the settings to the DOM
+        drupal_add_js($settings, 'setting');
+        _supportgroups_feed_initiate_notifications($user->uid);
+      }
+
+      drupal_add_css(SUPPORTGROUPS_FEED_WEB_PATH . '/css/s-f-notifications.css');
+      drupal_add_js(SUPPORTGROUPS_FEED_WEB_PATH . '/js/s-f-notifications.js');
+
+      $block['subject'] = "";
+      $block['content'] = array(
+        '#markup' => theme('sg_f_notifications'),
+      );
+      break;
+
+    case 'sg_f_latest_posts':
+      drupal_add_css(SKELETONSUB_THEME_PATH . '/css/someone.css');
+
+      // landing page for support someone
+      $data = supportgroups_feed_get_recent_activity(0, 20, array());
+      $output = "";
+
+      foreach($data['activity'] as $nid => $activity_node) {
+        $activity_node_user = $data['activity']['users'][$activity_node->uid];
+        $output .= theme('sg_f_activity_post', array(
+          'activity_type' => 'more-posts',
+          'activity_node' => $activity_node,
+          'activity_node_user' => $activity_node_user
+        ));
+      }
+
+      $block['subject'] = "";
+      $block['content'] = array(
+        '#markup' => $output,
+      );
+      break;
+
+    case 'sg_f_homepage_posts':
+      drupal_add_css(SKELETONSUB_THEME_PATH . '/css/someone.css');
+
+      // landing page for support someone
+      $data = supportgroups_feed_get_recent_activity(0, 20, array());
+      $output = "";
+
+      foreach($data['activity'] as $nid => $activity_node) {
+        $activity_node_user = isset($data['activity']['users']) ? $data['activity']['users'][$activity_node->uid] : '';
+        $output .= theme('sg_f_activity_post', array(
+          'activity_type' => 'front-posts',
+          'activity_node' => $activity_node,
+          'activity_node_user' => $activity_node_user,
+        ));
+      }
+
+      $block['subject'] = "";
+      $block['content'] = array(
+        '#markup' => $output,
+      );
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Implementation of Elysia Cron module's hook_cronapi
+ */
+function supportgroups_feed_cronapi($op, $job = NULL) {
+
+  $items['supportgroups_feed_trim_recent_activity_notifications_cache'] = array(
+    'description' => 'trim activity notifications cache',
+    'rule' => '0 */6 * * *', // Every 6 hours
+  );
+  $items['supportgroups_feed_warm_recent_activity_notifications_cache'] = array(
+    'description' => 'rebuild recent activity cache',
+    'rule' => '* * * * *', // Every minute
+  );
+  $items['supportgroups_feed_trim_recent_activity_cache'] = array(
+    'description' => 'trim recent activity cache',
+    'rule' => '13 */6 * * *', // Every 6 hours
+  );
+  $items['supportgroups_feed_warm_recent_activity_cache'] = array(
+    'description' => 'rebuild recent activity cache',
+    'rule' => '* * * * *', // Every minute
+  );
+
+  $items['supportgroups_feed_trim_recent_activity_group_cache'] = array(
+    'description' => 'clear notifications cache',
+    'rule' => '3 * * * *', // Every 6 hours
+  );
+  $items['supportgroups_feed_warm_recent_activity_group_cache'] = array(
+    'description' => 'rebuild recent activity group cache',
+    'rule' => '* * * * *', // Every minute
+  );
+  $items['supportgroups_feed_trim_activity_item_cache'] = array(
+    'description' => 'trim individual activity item cache',
+    'rule' => '7 * * * *', // Every hour
+  );
+  return $items;
+}
+
+/************************
+ * Helper functions
+ */
+
+/**
+ * Helper function used to determine the update interval that is returned to calling AJAX functions
+ * Note: this can later be connected to system metrics, or admin UI to tune how frequently AJAX functions
+ * are allowed to query the site for new notifications/support feed info
+ * and help throttle traffic to the site
+ *
+ * @return Int
+ */
+function supportgroups_feed_get_ajax_update_interval() {
+  return SUPPORTGROUPS_FEED_DEFAULT_UPDATE_INTERVAL_FOR_AJAX;
+}
+
+/**
+ * Filter the support feed based on the passed-in Group ID
+ * NOTE: this is the high-performance cache for current/new events only. Any past events should be through supportgroups_feed_get_past_activity_for_uid
+ *
+ * @see _supportgroups_feed_get_recent_activity_helper
+ *
+ * @param Int $gid Organic Groups Group ID
+ * @param Int $from_timestamp
+ * @param Int $num_rows
+ * @return Array
+ */
+function supportgroups_feed_get_recent_activity_for_group($gid = NULL, $from_timestamp = 0, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS) {
+  $subscribed_nids = array();
+  $groups = array();
+  $recent_activity = NULL;
+  if ($gid) {
+    $recent_activity = supportgroups_feed_get_recent_activity_for_gid_since_date($gid, $from_timestamp, FALSE);
+    $groups[] = $gid;
+  }
+
+  return _supportgroups_feed_get_recent_activity_helper($groups, array(), $from_timestamp, $num_rows, $recent_activity);
+}
+
+/**
+ * Helper function to return recent activity since the given timestamp
+ *
+ * @param int $from_timestamp --if 0, enforces no start timestmap and will just return current-> max num rows with no timestamp restriction
+ * @param int $num_rows -- number of rows to return
+ * @param Array $excluded_groups
+ * @return \Array
+ */
+function supportgroups_feed_get_recent_activity($from_timestamp = 0, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS, $excluded_groups = array(29207)) {
+  return _supportgroups_feed_get_recent_activity_helper(array(), array(), $from_timestamp, $num_rows, NULL, $excluded_groups);
+}
+
+/**
+ * Helper function to return the most recent $num_rows of events that occured $before_timestamp for the given group ID
+ * @see supportgroups_feed_get_past_activity
+ *
+ * @see supportgroups_feed_get_past_activity
+ *
+ * @param Int $uid
+ * @param Int $before_timestamp
+ * @param Int $num_rows
+ * @return Array
+ */
+function supportgroups_feed_get_past_activity_for_group($gid, $before_timestamp = NULL, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS) {
+
+  // we need this key to determine how to alter the SOLR query
+  $search_name = 'sg_get_past_activity_for_group';
+  $params =  supportgroups_feed_apachesolr_get_basic_activity_search_params($before_timestamp, $num_rows);
+
+  // add GID to the params-- we'll remove it in hook_apachesolr_query_prepare
+  $params['fq'][] = 'gid:'. $gid;
+
+  
+  // we're using static caches built up in drupal_static to store responses to this so we'll use accessor functions to
+  apachesolr_search_run($search_name, $params);
+
+  $data = array();
+  $data['activity'] = supportgroups_feed_apachesolr_current_activity_query_static_activity_cache();
+  $data['users'] = supportgroups_feed_get_user_info_multi(supportgroups_feed_apachesolr_current_activity_query_static_user_cache());
+  $data['activity_nids'] = supportgroups_feed_apachesolr_current_activity_query_static_nid_cache();
+  return $data;
+}
+
+/**
+ * Filter the support feed based on the passed-in uid
+ * NOTE: this is the high-performance cache for current/new events only. Any past events should be through supportgroups_feed_get_past_activity_for_uid
+ *
+ * @see _supportgroups_feed_get_recent_activity_helper
+ * @param Int $uid
+ * @param Int $from_timestamp
+ * @param Int $num_rows
+ * @return Array
+ */
+function supportgroups_feed_get_recent_activity_for_uid($uid = NULL, $from_timestamp = 0, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS) {
+  if (is_null($uid)) {
+    global $user;
+    $uid = $user->uid;
+  }
+
+  $user_info = supportgroups_feed_get_user_info($uid);
+  $uid_list = $user_info->supports;
+  $uid_list[] = $uid;
+
+  $group_list = $user_info->groups;
+
+  return _supportgroups_feed_get_recent_activity_helper($group_list, $uid_list, $from_timestamp, $num_rows);
+}
+
+/**
+ * Retrieve activity notifications for the given user
+ * August 2016 - this method may not the best way of going about this.
+ * See supportgroups_feed_get_recent_activity_notifications_per_user()
+ *
+ * @param Int $uid
+ * @param Int $before_timestamp
+ *   Notifications are counted from before a given timestamp starting with time()
+ * @param Int $num_rows
+ * @return Array
+ */
+function supportgroups_feed_get_recent_activity_notifications_for_uid($uid = NULL, $before_timestamp = NULL, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_NOTIFICATIONS) {
+  // We cache the timestamp in preparation for future requests on same page
+  static $timestamp = NULL;
+  // If the timestamp has a value, then that means we are requesting additional notifications
+  if ($timestamp) {
+    $before_timestamp = $timestamp;
+  }
+  else {
+    // We should reset the user field, but only necessary on first click
+    supportgroups_user_reset_notifications_unseen($uid);
+  }
+  $temp_output_activity = array();
+  $output_activity = array();
+  $count = 0;
+  $users = array();
+  if (is_null($uid)) {
+    global $user;
+    $uid = $user->uid;
+  }
+
+  // aggregating trackers to allow grouping of user responses per item (e.g. users 1-N commented on post Y)
+  $tracker = array();
+  $tracker['like'] = array();
+  $tracker['comment_like'] = array();
+  $tracker['comment'] = array();
+  $tracker['reply'] = array();
+
+  $after_timestamp = 0;
+  $temp_output_activity = array();
+  if ($uid) {
+    if (is_null($before_timestamp)) {
+      $before_timestamp = time();
+    }
+    $temp_output_activity = supportgroups_feed_recent_notifications($before_timestamp, $uid, $count, $num_rows,
+      $users, $tracker);
+
+  }
+
+  // track which keys have already been output so we don't create one entry in the aggregated array for each activity
+  // eg users 1, 2, 3 all comment on a given node, these will show up in $temp_output_activity
+  // as three timestamped items. They will already be aggregated in the tracker array
+  // under $tracker[$activity['tracker_array']][$activity['tracker_key']] but we need to make sure that
+  // the output activity array is also limited to a single item
+  $output_keys = array();
+  $output_keys['like'] = array();
+  $output_keys['comment_like'] = array();
+  $output_keys['comment'] = array();
+  $output_keys['reply'] = array();
+
+  // put together aggregated, timestamped list
+  $count = 0;
+  $deduct = 0;
+  $total = count($temp_output_activity);
+  foreach ($temp_output_activity as $millisecond_timestamp => $activity) {
+    // make sure we don't already have this activity in the output array for the given tracker_array
+    if (!isset($output_keys[$activity['tracker_array']][$activity['tracker_key']])) {
+      $timestamp = floor($millisecond_timestamp / 1000);
+
+      // if the rounded seconds-based timestamp already exists, just decrement until it's unique in the return array
+      if (isset($output_activity[$timestamp])) {
+        while (isset($output_activity[$timestamp])) {
+          $timestamp--;
+        }
+      }
+      $return_data = $tracker[$activity['tracker_array']][$activity['tracker_key']];
+      $return_data['type'] = $activity['tracker_array'];
+      $return_data['uids'] = array_unique($return_data['uids']);
+      $output_activity[$timestamp] = $return_data;
+
+      // set flag so the same key is not added multiple times for multiple timestamps
+      // e.g. if 8 users comment on a given activity thread
+      $output_keys[$activity['tracker_array']][$activity['tracker_key']] = TRUE;
+      $count++;
+    }
+    else {
+      $deduct++;
+    }
+    if ($count >= $num_rows) {
+      break;
+    }
+  }
+
+  $more = FALSE;
+  if ($count < ($total - $deduct)) {
+    // We know there are more notifications
+    $more = TRUE;
+    watchdog('notification', ' we have more <pre>');
+  }
+  $data = array(
+    'activity' => $output_activity,
+    'users' => supportgroups_feed_get_user_info_multi($users),
+    'activity_count' => count($output_activity),
+    'more' => $more
+  );
+
+  return $data;
+}
+
+function supportgroups_feed_recent_notifications($before_timestamp, $uid, $count, $num_rows, &$users, &$tracker,
+                                                 $level = 0) {
+
+  if (variable_get('supportgroups_individual_notification_cache', 0)) {
+    $recent_activity = supportgroups_feed_get_recent_activity_notifications_after_date_by_uid($uid, $before_timestamp);
+  }
+  else {
+    $recent_activity = supportgroups_feed_get_recent_activity_notifications_after_date($before_timestamp);
+  }
+
+  // The rows are further whittled down later so we need to get more than we need
+  $num_rows = variable_get('supportgroups_feed_notifications_batch', 24);
+
+  // iterate through current activity list and filter based on user's specific subscribed needs
+  foreach ($recent_activity as $millisecond_timestamp => $activity) {
+    $add_activity = FALSE;
+
+    $timestamp = floor($millisecond_timestamp / 1000);
+    // Redis stores serialized strings, so we need to convert here
+    $activity = unserialize($activity);
+    //watchdog('notification', ' activity array <pre>' . print_r($activity,1));
+    // ignore any activity the user posted against themselves (e.g. commenting on their own posts)
+    if ($uid != $activity->uid) {
+      //watchdog('notification', 'not author <pre>' . print_r($activity,1));
+      // we check for comment first because it is likely that an original post author may comment on their own post
+      // so we want to track likes and responses against the comment before the post itself
+      if ($uid == $activity->orig_comment_uid) {
+        $add_activity = TRUE;
+
+        $tracker_key = $activity->cid;
+        $base_tracker_data = array(
+          'uids' => array(),
+          'nid' => $activity->nid,
+          'display_title' => $activity->comment_subject
+        );
+
+        // either a like or a reply on a comment the uid posted
+        if ($activity->reply) {
+          $tracker_array = 'reply';
+        }
+        else if ($activity->like) {
+          $tracker_array = 'comment_like';
+        }
+      }
+      else if ($uid == $activity->node_uid) {
+        // either a comment or a like on a node the uid authored
+        $add_activity = TRUE;
+        $tracker_key = $activity->nid;
+        $base_tracker_data = array(
+          'uids' => array(),
+          'nid' => $activity->nid,
+          'display_title' => $activity->title
+        );
+
+        if ($activity->like) {
+          // node authored by uid was liked
+          $tracker_array = 'like';
+        }
+        else if ($activity->comment) {
+          $tracker_array = 'comment';
+        }
+      }
+
+      if ($add_activity) {
+
+        // place the activity in the corresponding aggregator/tracker array
+        if (!isset($tracker[$tracker_array][$tracker_key])) {
+          // if there is not an entry already, add it here
+          $tracker[$tracker_array][$tracker_key] = $base_tracker_data;
+        }
+
+        // add uid to the list for the given tracker event
+        $tracker[$tracker_array][$tracker_key]['uids'][] = $activity->uid;
+
+        // add a placeholder in the output array
+        $temp_output_activity[$millisecond_timestamp] = array(
+          'tracker_array' => $tracker_array,
+          'tracker_key' => $tracker_key,
+        );
+
+        $count++;
+        // add user to user list tracking
+        $users[] = $activity->uid;
+      }
+      //watchdog('notification', ' count <pre>' . $count . ' level '.$level);
+      // if we've gotten enough records, stop here
+      if ($count >= $num_rows) {
+        //watchdog('notification', ' num rows <pre>' . print_r($num_rows,1));
+        return $temp_output_activity;
+      }
+    }// end if ($uid != $activity->uid) {
+
+  }
+  if (empty($recent_activity)) {
+    return array();
+  }
+  if ($count < $num_rows && $level < 100) {
+    $level++;
+    $new_output_activity = supportgroups_feed_recent_notifications($timestamp, $uid, $count, $num_rows,
+      $users, $tracker, $level);
+    foreach ($new_output_activity as $timestamp => $data) {
+      $temp_output_activity[$timestamp] = $data;
+    }
+
+  }
+
+  return $temp_output_activity;
+
+}
+
+
+/**
+ * General-case helper function that returns activity items from the recent items cache for the given list of subscribed nids
+ *
+ * Returns array:
+ * $data['activity'] = array(
+ *   $timestamp1 = $activity_item1,
+ *   $timestamp2 = $activity_item2,
+ *   ...
+ *   );
+ * $data['users'] = array(
+ *   $uid1 = $user_info1,
+ *   $uid2 = $user_info2,
+ *   ...
+ *   );
+ * @param Array $subscribed_groups
+ * @param Array $subscribed_nids
+ * @param Int $from_timestamp
+ * @param Int $num_rows
+ * @param Array $recent_activity
+ * @param Array $exclude_groups
+ * @return Array
+ */
+function _supportgroups_feed_get_recent_activity_helper($subscribed_groups = array(), $subscribed_uids = array(), $from_timestamp = 0, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS, $recent_activity = NULL, $exclude_groups = array()) {
+  $count = 0;
+  $output_activity = array();
+
+  // sort groups and uids-- required for fast_in_array
+  sort($subscribed_groups);
+  sort($subscribed_uids);
+
+  if (is_null($recent_activity)) {
+    $recent_activity = supportgroups_feed_get_recent_activity_since_date($from_timestamp);
+  }
+
+  // tracking array to aggregate user IDs that are authors, etc.
+  $users = array();
+  $nids = array();
+
+  // iterate through current activity list and filter based on user's specific subscribed needs
+  foreach ($recent_activity as $timestamp => $activity) {
+    $add_activity = FALSE;
+
+    if ($timestamp >= $from_timestamp) {
+      // we may be returning serialized data so unserialize it here
+      if (is_string($activity)) {
+        $activity = unserialize($activity);
+      }
+
+      if (!$add_activity && $subscribed_uids) {
+        // if there are uids to be filtered against, do it here
+        // only add activity to the array if it is in the list of filtered nids
+        if (fast_in_array($activity->uid, $subscribed_uids)) {
+          $add_activity = TRUE;
+        }
+      }
+
+      if (!$add_activity && $subscribed_groups) {
+        // we need to check against all the groups for the given activity
+        foreach ($activity->group_ids as $group_id) {
+          if (!$add_activity && fast_in_array($group_id, $subscribed_groups)) {
+            $add_activity = TRUE;
+            break;
+          }
+        }
+      }
+
+      if (!$add_activity && !$subscribed_groups && !$subscribed_uids) {
+        // if no nids to filter by, simply add the activity
+        $add_activity = TRUE;
+      }
+
+      // support additional exclusions
+      if ($exclude_groups) {
+        foreach ($activity->group_ids as $group_id) {
+          if (!$add_activity && fast_in_array($group_id, $exclude_groups)) {
+            $add_activity = FALSE;
+            break;
+          }
+        }
+      }
+
+
+      if ($add_activity) {
+        $output_activity[$timestamp] = $activity;
+        $count++;
+        $users[] = $activity->uid;
+        $nids[] = $activity->nid;
+        if (isset($activity->comment_uids) && is_array($activity->comment_uids)) {
+          $users = array_merge($users, $activity->comment_uids);
+        }
+      }
+
+      // if we've gotten enough records, stop here
+      if ($count >= $num_rows) {
+        break;
+      }
+    }// end if ($timestamp >= $from_timestamp) {
+    else {
+      // we have passed the timestamp, no need to continue iterating through
+      break;
+    }
+  }
+
+  $data = array(
+      'activity' => $output_activity,
+      'users' => supportgroups_feed_get_user_info_multi($users),
+      'activity_nids' => array_unique($nids),
+  );
+  return $data;
+}
+
+/**
+ * Helper function to return the most recent $num_rows of events that occured $before_timestamp
+ * @see supportgroups_feed_get_past_activity
+ *
+ * @see supportgroups_feed_get_past_activity
+ *
+ * @param Int $uid
+ * @param Int $before_timestamp
+ * @param Int $num_rows
+ * @return Array
+ */
+function supportgroups_feed_get_past_activity_for_user($uid = 0, $before_timestamp = NULL, $num_rows = SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS) {
+
+  // we need this key to determine how to alter the SOLR query
+  $search_name = 'sg_get_past_activity_for_user';
+  $params =  supportgroups_feed_apachesolr_get_basic_activity_search_params($before_timestamp, $num_rows);
+
+  // add UID to the params-- we'll remove it in hook_apachesolr_query_prepare
+  $params['fq'][] = 'uid:'. $uid;
+
+  // we're using static caches built up in drupal_static to store responses to this so we'll use accessor functions to
+  // access the content
+  apachesolr_search_run($search_name, $params);
+
+  $data = array();
+  $data['activity'] = supportgroups_feed_apachesolr_current_activity_query_static_activity_cache();
+  $data['users'] = supportgroups_feed_get_user_info_multi(supportgroups_feed_apachesolr_current_activity_query_static_user_cache());
+  $data['activity_nids'] = supportgroups_feed_apachesolr_current_activity_query_static_nid_cache();
+  return $data;
+}
+
+
+
+
+/**
+ * Helper function to retrieve nids of posts the given uid has commented on
+ * Takes an optional unix timestamp of a cutoff date, e.g. so we can query only the last X days -- strtotime('-7 days')
+ *
+ * @param Int $uid
+ * @param Int $cutoff_timestamp
+ * @return Array
+ */
+function _supportgroups_feed_get_commented_on_nids_for_uid($uid, $cutoff_timestamp = 0) {
+  $nids = array();
+
+  // get nids based on issues the given user has commented on
+  $query = "SELECT nid FROM {comment} WHERE uid = :uid";
+  $params = array(':uid' => $uid);
+
+  if ($cutoff_timestamp) {
+    $query .= ' AND changed > :timestamp';
+    $params[':timestamp'] = $cutoff_timestamp;
+  }
+
+  $result = db_query($query, $params);
+
+  if ($result->rowCount()) {
+    $nids = $result->fetchCol();
+  }
+
+  return $nids;
+
+}
+
+/**
+ * Helper function to retrieve an array of node IDs for the given $types
+ * that are authored by the uids passed in
+ * If $types are not specified, this will default to _supportgroups_feed_activity_feed_node_types
+ * @param unknown_type $uids
+ * @param unknown_type $types
+ * @return Ambigous <multitype:, An>
+ */
+function _supportgroups_feed_get_nids_authored_by_uids($uids, $types = array()) {
+  $nids = array();
+
+  if ($uids) {
+    $query = "SELECT nid FROM {node} WHERE uid IN (:uids) AND type IN (:types)";
+    if (!$types) {
+      $types = _supportgroups_feed_activity_feed_node_types();
+    }
+
+    $result = db_query($query, array(':uids' => join(',', $uids), ':types' => $types));
+
+    if ($result->rowCount()) {
+      $nids = $result->fetchCol();
+    }
+  }
+  return $nids;
+}
+
+/**
+ * Helper function to return the list of supported users for the given UID
+ * Returns an array of UIDs
+ *
+ * @param Int $uid
+ * @return array
+ */
+function _supportgroups_feed_get_supported_users($uid, $add_user_info = FALSE) {
+  $uids = array();
+  $args = array(
+      'user' => $uid,
+      'rtid' => SUPPORTGROUPS_FEED_SUPPORT_RELATIONSHIP_ID, // relationship ID for "supporting"
+      'approved' => TRUE);
+
+  // user_relationships_load returns all relationships for the given user, so we must filter to get the correct direction for the relationship
+  $supported_users = user_relationships_load($args);
+  foreach ($supported_users as $relationship_id => $relationship) {
+
+    if ($uid == $relationship->requester_id) {
+      $uids[] = $relationship->requestee_id;
+    }
+  }
+
+  if ($add_user_info) {
+    $uids = supportgroups_feed_get_user_info_multi($uids);
+  }
+  return $uids;
+}
+
+/**
+ * Helper function to retrieve a list of uids that support the given uid
+ *
+ * @param Int $uid
+ *
+ */
+function _supportgroups_feed_get_supported_by($uid, $add_user_info = FALSE) {
+  $uids = array();
+  $args = array(
+      'user' => $uid,
+      'rtid' => SUPPORTGROUPS_FEED_SUPPORT_RELATIONSHIP_ID,
+      'approved' => TRUE);
+
+  // user_relationships_load returns all relationships for the given user, so we must filter to get the correct direction for the relationship
+  $supported_users = user_relationships_load($args);
+  foreach ($supported_users as $relationship_id => $relationship) {
+    if ($uid == $relationship->requestee_id) {
+      $uids[] = $relationship->requester_id;
+    }
+  }
+
+  if ($add_user_info) {
+    $uids = supportgroups_feed_get_user_info_multi($uids);
+  }
+  return $uids;
+}
+
+/**
+ * Helper method to extract and populate user information for the given set of comments
+ *
+ * @param Array $comments
+ * @return Array keyed array of uid => user info (as returned by supportgroups_feed_get_user_info)
+ */
+function _supportgroups_feed_get_user_info_for_comments($comments) {
+  $users = array();
+  foreach ($comments as $comment) {
+    $users[] = $comment->uid;
+  }
+
+  array_unique($users);
+  return supportgroups_feed_get_user_info_multi($users);
+}
+
+/**
+ * Retrieve the list of groups subscribed to by the passed uid
+ *
+ * @param Int $uid
+ * @param Boolean $csv Flag- set to FALSE to return as array,
+ * @return Ambigous <string, multitype:>
+ */
+function supportgroups_feed_get_groups_for_uid($uid, $return_array = FALSE) {
+  $groups = '';
+  $query  = "SELECT gid FROM {og_membership} WHERE entity_type = 'user' AND etid = :uid";
+  $result = db_query($query, array(':uid' => $uid));
+  if ($result->rowCount()) {
+    $groups = $result->fetchCol();
+  }
+
+  if (!$return_array && is_array($groups)) {
+    $groups = implode(',', $groups);
+  }
+
+  return $groups;
+}
+/**
+ * Retrieve the list of one comment posts
+ *
+ * @param Int current pageNumber
+ * @return node ids
+ */
+function supportgroups_feed_get_onecomment_list($currentPage){
+  
+  $query = 'SELECT tn.nid, tn.changed AS timestamp
+            FROM tracker_node tn
+            INNER JOIN node n ON tn.nid = n.nid AND n.type IN (:types)
+            INNER JOIN node_comment_statistics ncs ON n.nid = ncs.nid AND ncs.comment_count = 1
+            WHERE published
+            AND tn.changed > :timestamp
+            ORDER BY timestamp DESC
+            LIMIT '.(($currentPage - 1) * 20).',20';
+
+  $params = array(':timestamp' => 0, ':types' => join(',', _supportgroups_feed_activity_feed_node_types()));
+  
+  $result = db_query($query, $params);
+
+  // retrieve the nids without having to iterate through the array first
+  // in order to not have to perform this query twice, we must store the results and iterate through them to pull
+  // out the nids
+  $results = $result->fetchAllAssoc('timestamp');
+
+  // put together list of nids to retrieve in as few cache calls as possible
+  $nids = array();
+  
+  foreach ($results as $record) {
+    // key off node ID to keep these unique
+    $nids[$record->nid] = $record->nid;
+    
+  }
+
+  return $nids;
+}
+
+/**
+ * Retrieve the one commented posts count
+ *
+ * @return post count
+ */
+
+function supportgroups_feed_get_onecomment_count(){
+  $query = 'SELECT count(tn.nid) as count
+            FROM tracker_node tn
+            INNER JOIN node n ON tn.nid = n.nid AND n.type IN (:types)
+            INNER JOIN node_comment_statistics ncs ON n.nid = ncs.nid AND ncs.comment_count = 1
+            WHERE published
+            AND tn.changed > :timestamp';
+
+  $params = array(':timestamp' => 0, ':types' => join(',', _supportgroups_feed_activity_feed_node_types()));
+  
+  $count_result = db_query($query, $params);
+  $count_res = $count_result->fetchCol();
+  return $count_res[0];
+}
+
+/**
+ * Helper function
+ * return node type(s) that are included in the support feed
+ *
+ * @return multitype:string
+ */
+function _supportgroups_feed_activity_feed_node_types() {
+  return array('group_post');
+}
+
+/**
+ * Helper function to generate the cache ID (cid)
+ */
+function _supportgroups_feed_recent_activity_for_gid_cid($gid) {
+  return SUPPORTGROUPS_FEED_CACHE_PREFIX .'group-activity-gid-'. $gid;
+}
+
+
+
+/**
+ * Helper function to retrieve the object to cache for a given comment notification
+ * NOTE: these fields must stay in sync with the corresponding query in _supportgroups_feed_get_recent_activity_notifications()
+ *
+ * @param stdClass $comment as passed by hook_comment
+ * @return stdClass
+ */
+function _supportgroups_feed_get_abbreviated_activity_notification_comment($comment) {
+  if (!$comment->status) {
+    return FALSE;
+  }
+
+  $node = supportgroups_feed_get_activity_item($comment->nid);
+  $cache_object = new stdClass();
+
+  $parent_comment = $comment->pid ? comment_load($comment->pid) : FALSE;
+
+  // NOTE: these fields must stay in sync with the corresponding query in _supportgroups_feed_get_recent_activity_notifications()
+  $cache_object->nid = $node->nid;
+  $cache_object->node_uid = $node->uid;
+  $cache_object->title = $node->title;
+  $cache_object->cid = $comment->pid ? $comment->pid : $comment->cid;
+  $cache_object->comment_subject = $comment->pid ? $parent_comment->subject : $comment->subject;
+  $cache_object->orig_comment_uid = $comment->pid ? $parent_comment->uid : 0;
+  $cache_object->reply = $comment->pid ? TRUE : FALSE;
+  $cache_object->uid = $comment->uid;
+  $cache_object->timestamp = (1000 * time()) + mt_rand(0, 1000);
+  $cache_object->like = FALSE;
+  $cache_object->comment = TRUE;
+
+  return $cache_object;
+}
+
+/**
+ * Helper function to retrieve the object to cache for a given like notification
+ * NOTE: these fields must stay in sync with the corresponding query in _supportgroups_feed_get_recent_activity_notifications()
+ *
+ * @param Int $nid
+ * @param stdClass $account user account that posted the flag
+ * @return stdClass
+ */
+function _supportgroups_feed_get_abbreviated_activity_notification_like($nid, $account) {
+  $node = supportgroups_feed_get_activity_item($nid);
+  $cache_object = new stdClass();
+
+  // NOTE: these fields must stay in sync with the corresponding query in _supportgroups_feed_get_recent_activity_notifications()
+  $cache_object->nid = $node->nid;
+  $cache_object->node_uid = $node->uid;
+  $cache_object->title = $node->title;
+  $cache_object->cid = 0;
+  $cache_object->comment_subject = NULL;
+  $cache_object->orig_comment_uid = 0;
+  $cache_object->reply = FALSE;
+  $cache_object->uid = $account->uid;
+  $cache_object->timestamp = (1000 * time()) + mt_rand(0, 1000);
+  $cache_object->like = TRUE;
+  $cache_object->comment = FALSE;
+
+  return $cache_object;
+}
+
+/**
+ * Helper function to retrieve the object to cache for a given comment like notification
+ * NOTE: these fields must stay in sync with the corresponding query in _supportgroups_feed_get_recent_activity_notifications()
+ *
+ * @param Int $nid
+ * @param stdClass $account user account that posted the flag
+ * @return stdClass
+ */
+function _supportgroups_feed_get_abbreviated_activity_notification_comment_like($comment_id, $account) {
+  $cache_object = _supportgroups_feed_get_abbreviated_activity_notification_comment(comment_load($comment_id));
+  // some likes the given user's comment. we want to track their UID so we can notify them of the activity
+  // and track the person who liked it
+  $cache_object->orig_comment_uid = $cache_object->uid;
+  $cache_object->uid = $account->uid;
+  $cache_object->like = TRUE;
+  return $cache_object;
+}
+
+/**
+ * Helper function to determine which abbreviated cacheable content to return for a given flag
+ * If flag is not supported/cached, this function returns FALSE
+ *
+ * @param stdClass $flag
+ */
+function _supportgroups_feed_get_abbreviated_activity_notification_flag_helper($flag, $content_id, $account) {
+  if ($flag->name == 'like') {
+    return _supportgroups_feed_get_abbreviated_activity_notification_like($content_id, $account);
+  }
+  else if ($flag->name == 'like_comments') {
+    return _supportgroups_feed_get_abbreviated_activity_notification_comment_like($content_id, $account);
+  }
+  return FALSE;
+}
+
+/**
+ * Helper function to check if user has a current notifications cache, and to build one if not
+ *
+ * @param $uid
+ */
+function _supportgroups_feed_initiate_notifications($uid) {
+  $client = _supportgroups_feed_get_cache_client();
+  $key = SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID . '-' . $uid;
+  $cache = $client->keys($key);
+  if (empty($cache)) {
+    _supportgroups_feed_get_recent_activity_notifications_by_uid($uid);
+  }
+}
+/**
+ * Helper function that handles actually retrieving current activity notifications and storing it to Redis sorted array (under key=>SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID)
+ * items in sorted array are sorted by timestamp
+ *
+ * @see supportgroups_feed_get_recent_activity_notifications
+ * NOTE: we do not extract user information at this point, since we don't know how many items we will be displaying
+ *
+ * ALSO NOTE: returning timestamps in milliseconds with random 1000ths added to help distinguish between multiple events in a second
+ *
+ */
+function _supportgroups_feed_get_recent_activity_notifications($since_timestamp = NULL) {
+  $activity = array();
+
+  $cutoff_date = !is_null($since_timestamp) ? $since_timestamp : strtotime(SUPPORTGROUPS_FEED_ACTIVITY_NOTIFICATIONS_TIME_LIMIT);
+
+  $redis_batch = array();
+
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_comment
+  $query = 'SELECT
+              n.nid,
+              n.uid as node_uid,
+              n.title,
+              IF (c.pid, c.pid, c.cid) as cid,
+              IF (c.pid, 1, 0) as reply,
+              IF (c.pid, c2.subject, c.subject) as comment_subject,
+              c.uid as uid,
+              IF (c.pid, c2.uid, 0) as orig_comment_uid,
+              (1000 * c.changed) + FLOOR(RAND() * 1000) as timestamp,
+              0 as "like",
+              1 as comment
+            FROM {node} n
+            INNER JOIN {comment} c ON c.nid = n.nid
+            LEFT JOIN {comment} c2 ON c.pid = c2.cid
+            WHERE
+              n.type IN (:types)
+              AND n.status
+              AND c.changed > :time_limit
+            ORDER BY timestamp DESC';
+  $result = db_query($query, array(':time_limit' => $cutoff_date, ':types' => join(',', _supportgroups_feed_activity_feed_node_types())));
+
+  foreach ($result as $record) {
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+
+  // add liked nodes
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_like
+  $query = 'SELECT
+                n.nid,
+                n.uid AS node_uid,
+                n.title,
+                0 as cid,
+                NULL as comment_subject,
+                0 as orig_comment_uid,
+                0 as reply,
+                fc.uid as uid,
+                (1000 * fc.timestamp) + FLOOR(RAND() * 1000) as timestamp,
+                1 AS "like",
+                0 AS comment
+              FROM {flag_content} fc
+              INNER JOIN {flags} f ON fc.fid = f.fid
+              INNER JOIN {node} n ON fc.content_id = n.nid
+              WHERE
+                n.type IN (:types)
+                AND n.status
+                AND fc.timestamp > :time_limit
+                AND f.name = :flag_name';
+
+  $result = db_query($query, array(':flag_name' => 'like', ':time_limit' => $cutoff_date, ':types' => join(',', _supportgroups_feed_activity_feed_node_types())));
+
+  foreach ($result as $record) {
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+
+  // add liked comments
+  // we are only returning likes against the comment itself, so we don't need the original comment info, hence no join like above
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_comment_like
+  $query = 'SELECT n.nid,
+              n.uid AS node_uid,
+              n.title,
+              c.cid,
+              c.subject as comment_subject,
+              0 as reply,
+              fc.uid as uid,
+              c.uid as orig_comment_uid,
+              (1000 * fc.timestamp) + FLOOR(RAND() * 1000) AS timestamp,
+              1 AS "like",
+              1 AS comment
+            FROM {flag_content} fc
+            INNER JOIN {flags} f ON fc.fid = f.fid
+            INNER JOIN {comment} c ON c.cid = fc.content_id
+            INNER JOIN {node} n ON c.nid = n.nid
+            WHERE
+              n.type IN (:types)
+              AND n.status
+              AND timestamp > :time_limit
+              AND f.name = :flag_name';
+
+  $result = db_query($query, array(':flag_name' => 'like_comments', ':time_limit' => $cutoff_date, ':types' => join(',', _supportgroups_feed_activity_feed_node_types())));
+
+  foreach ($result as $record) {
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+  _supportgroups_feed_batch_save_redis_sorted_set(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID, $redis_batch, SUPPORTGROUPS_FEED_RECENT_ACTIVITY_REDIS_BATCH_SIZE);
+}
+
+/**
+ * Helper function that handles actually retrieving current activity notifications by uid and storing it to Redis
+ * sorted array (under key=>SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID-[uid])
+ * items in sorted array are sorted by timestamp
+ *
+ * @see supportgroups_feed_get_recent_activity_notifications
+ * NOTE: we do not extract user information at this point, since we don't know how many items we will be displaying
+ *
+ * ALSO NOTE: returning timestamps in milliseconds with random 1000ths added to help distinguish between multiple events in a second
+ *
+ */
+function _supportgroups_feed_get_recent_activity_notifications_by_uid($uid, $since_timestamp = NULL) {
+  $activity = array();
+
+  $cutoff_date = !is_null($since_timestamp) ? $since_timestamp : strtotime(SUPPORTGROUPS_FEED_ACTIVITY_NOTIFICATIONS_TIME_LIMIT);
+
+  $redis_batch = array();
+
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_comment
+  $query = 'SELECT
+              n.nid,
+              n.uid as node_uid,
+              n.title,
+              IF (c.pid, c.pid, c.cid) as cid,
+              IF (c.pid, 1, 0) as reply,
+              IF (c.pid, c2.subject, c.subject) as comment_subject,
+              c.uid as uid,
+              IF (c.pid, c2.uid, 0) as orig_comment_uid,
+              (1000 * c.changed) + FLOOR(RAND() * 1000) as timestamp,
+              0 as "like",
+              1 as comment
+            FROM {node} n
+            INNER JOIN {comment} c ON c.nid = n.nid
+            LEFT JOIN {comment} c2 ON c.pid = c2.cid
+            WHERE
+              n.type IN (:types)
+              AND n.status
+              AND c.changed > :time_limit
+              AND n.uid = :uid
+            ORDER BY timestamp DESC';
+
+  $result = db_query($query, array(
+    ':time_limit' => $cutoff_date,
+    ':types' => join(',', _supportgroups_feed_activity_feed_node_types()),
+    ':uid' => $uid
+  ));
+
+  foreach ($result as $record) {
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+
+  // add liked nodes
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_like
+  $query = 'SELECT
+                n.nid,
+                n.uid AS node_uid,
+                n.title,
+                0 as cid,
+                NULL as comment_subject,
+                0 as orig_comment_uid,
+                0 as reply,
+                fc.uid as uid,
+                (1000 * fc.timestamp) + FLOOR(RAND() * 1000) as timestamp,
+                1 AS "like",
+                0 AS comment
+              FROM {flag_content} fc
+              INNER JOIN {flags} f ON fc.fid = f.fid
+              INNER JOIN {node} n ON fc.content_id = n.nid
+              WHERE
+                n.type IN (:types)
+                AND n.status
+                AND fc.timestamp > :time_limit
+                AND f.name = :flag_name
+                AND n.uid = :uid';
+
+  $result = db_query($query, array(
+    ':flag_name' => 'like',
+    ':time_limit' => $cutoff_date,
+    ':types' => join(',', _supportgroups_feed_activity_feed_node_types()),
+    ':uid' => $uid
+  ));
+
+  foreach ($result as $record) {
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+
+  // add liked comments
+  // we are only returning likes against the comment itself, so we don't need the original comment info, hence no join like above
+  // NOTE: if fields are added/modified here they must also be added/modified
+  // in _supportgroups_feed_get_abbreviated_activity_notification_comment_like
+  $query = 'SELECT n.nid,
+              n.uid AS node_uid,
+              n.title,
+              c.cid,
+              c.subject as comment_subject,
+              0 as reply,
+              fc.uid as uid,
+              c.uid as orig_comment_uid,
+              (1000 * fc.timestamp) + FLOOR(RAND() * 1000) AS timestamp,
+              1 AS "like",
+              1 AS comment
+            FROM {flag_content} fc
+            INNER JOIN {flags} f ON fc.fid = f.fid
+            INNER JOIN {comment} c ON c.cid = fc.content_id
+            INNER JOIN {node} n ON c.nid = n.nid
+            WHERE
+              n.type IN (:types)
+              AND n.status
+              AND timestamp > :time_limit
+              AND f.name = :flag_name
+              AND c.uid = :uid';
+
+  $result = db_query($query, array(
+    ':flag_name' => 'like_comments',
+    ':time_limit' => $cutoff_date,
+    ':types' => join(',', _supportgroups_feed_activity_feed_node_types()),
+    ':uid' => $uid
+  ));
+
+  foreach ($result as $record) {
+
+    $redis_batch[] = $record->timestamp;
+    $redis_batch[] = serialize($record);
+  }
+
+  _supportgroups_feed_batch_save_redis_sorted_set(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID . '-' . $uid,
+    $redis_batch, SUPPORTGROUPS_FEED_RECENT_ACTIVITY_REDIS_BATCH_SIZE);
+}
+
+/**
+ * Helper function to retrieve cached items at once, given an array of requested_items
+ * This only works for single parameter cids, e.g. keyed off of a node nid, or other single parameter
+ *
+ * Any uncached items will be retrieved separately
+ * If an invalid item id is sent, or no data corresponds to the given requested_item_id, this function will simply not return a record
+ * for that item
+ *
+ * NOTE: array is returned keyed by the output of $output_array_key_function_name, but the order is not necessarily the same as the order of nids passed in
+ * so if order is important, calling function must enforce it
+ *
+ * @param Array $requested_items
+ * @param String $cid_function_name name of the function to return a cache ID for the given requested_item
+ * @param String $individual_data_function_name name of the function to return data for a single requested_item
+ * @param String $output_array_key_function_name name of the function to return the desired key for the output array, e.g. how to navigate the cache object to get to nid
+ * @param Array $uids Optional array passed by reference to pull out uids from the cached items.
+ * @return Array
+ */
+function supportgroups_feed_get_multiple_cached_items($requested_items = array(), $cid_function_name, $individual_data_function_name, $output_array_key_function_name, &$uids = NULL) {
+  $items = array();
+  $num_requested_items = count($requested_items);
+
+  // only do this if nids have been passed in
+  if (is_array($requested_items) && ($num_requested_items > 0)) {
+
+    $cids = array();
+    // build an array of cache ids (cids) for a single cache_get_multiple call
+    foreach ($requested_items as $item) {
+      $cids[] = $cid_function_name($item);
+    }
+
+    // retrieve as many discussions as possible in a single call
+    $temp_items = cache_get_multiple($cids, SUPPORTGROUPS_FEED_CACHE_TABLE);
+
+    // if more nids were passed in than discussions retrieved, we need to iterate through to find any that might have been missed
+    $num_items = count($temp_items);
+
+    if ($num_items < $num_requested_items) {
+      foreach ($requested_items as $item) {
+        $cid = $cid_function_name($item);
+
+        // if the given discussion wasn't returned from cache, then query for it directly
+        if (!array_key_exists($cid, $temp_items)) {
+
+          // pass in TRUE for reset-- we already know this doesn't exist in cache, so need for the extra lookup
+          $item = $individual_data_function_name($item, TRUE);
+
+          // mock this up into the same format that cache_get_multiple returns data in (e.g. same as cache_get)
+          $cache_mockup = new stdClass();
+          $cache_mockup->cid = $cid;
+          $cache_mockup->data = $item;
+          $temp_items[$cid] = $cache_mockup;
+
+          // keep track of how many discussions we've added.
+          // if we're done, break this loop
+          $num_items++;
+          if ($num_items == $num_requested_items) {
+            break;
+          }
+        }// end if (!array_key_exists($cid, $discussions)) {
+      }// end foreach ($nids as $nid) {
+    }// end if (count($discussions) < count($nids)) {
+
+    $extract_uid = FALSE;
+    if (!is_null($uids)) {
+      $extract_uid = TRUE;
+    }
+    // now move the items into the format we want to, e.g. array($nid => $data)
+    foreach ($temp_items as $item) {
+      $items[$output_array_key_function_name($item)] = $item->data;
+      if ($extract_uid) {
+
+        // work around to extract and add comment uids to the list of user IDs referenced by this call
+        if (isset($item->data->comment_uids) && is_array($item->data->comment_uids)) {
+          $uids = $uids + $item->data->comment_uids;
+        }
+        $uids[] = $item->data->uid;
+      }
+    }
+  }// end if ($num_requested_items) {
+
+  return $items;
+}
+
+/**
+ * Retrieve multiple activity items with as few cache calls as possible
+ *
+ * @see supportgroups_feed_get_multiple_cached_items()
+ *
+ * @param Array $nids
+ * @return Array
+ */
+function supportgroups_feed_get_activity_items($nids = array(), &$users = array()) {
+  $uids = array();
+  $activity = supportgroups_feed_get_multiple_cached_items($nids, '_supportgroups_feed_activity_item_cid', 'supportgroups_feed_get_activity_item', '_supportgroups_feed_get_activity_item_array_key', $uids);
+  $users = $uids;
+  return $activity;
+}
+
+/**
+ * Supporting function required to work with supportgroups_feed_get_multiple_cached_items
+ * Return the desired key for activity
+ * @param unknown_type $item
+ */
+function _supportgroups_feed_get_activity_item_array_key($item) {
+  return $item->data->nid;
+}
+
+
+
+function _supportgroups_feed_get_activity_item_from_node($nid) {
+  $item = $nid;
+  if (is_numeric($nid)) {
+    $item = node_load($nid, NULL, TRUE);
+  }
+
+  // Add necessary fields to activity object here
+  $new_item = new stdClass();
+  $new_item->comment_uids = array();
+  $new_item->comments = array();
+
+
+  // only cache a subset of comments. the rest will be returned by calls to supportgroups_feed_get_comments_for_nid
+  $comment_thread = _supportgroups_feed_comment_get_thread($item, COMMENT_MODE_THREADED, SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY);
+
+  $offset = count($comment_thread) > SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY ? count($comment_thread) - SUPPORTGROUPS_FEED_NUM_COMMENTS_TO_DISPLAY_INITIALLY : 0;
+
+  $thread = array_slice($comment_thread, $offset);
+  $comments = comment_load_multiple($thread);
+
+  // strip unnecessary comment fields
+  foreach ($comments as $comment_id => $comment) {
+    $new_item->comments[$comment_id] = _supportgroups_feed_get_abbreviated_comment_info($comment);
+    $new_item->comment_uids[] = $comment->uid;
+  }
+
+  $new_item->comments = array_reverse($new_item->comments);
+
+  $new_item->uid = $item->uid;
+  $new_item->title = $item->title;
+  $new_item->nid = $item->nid;
+  $new_item->type = $item->type;
+  $new_item->created = $item->created;
+  $new_item->body = $item->body;
+
+  // we only need the safe value in this
+  unset($new_item->body['und'][0]['value']);
+  unset($new_item->body['und'][0]['summary']);
+  unset($new_item->body['und'][0]['format']);
+  unset($new_item->body['und'][0]['safe_summary']);
+
+  $new_item->url = url('node/' . $item->nid);
+  $new_item->comment = $item->comment;
+  $new_item->comment_count = $item->comment_count;
+
+  // Add uploaded image
+  $new_item->field_discussion_image = $item->field_discussion_image;
+
+  // Add embedded youtube cck field
+  $new_item->field_discussion_embed_youtub = $item->field_discussion_embed_youtub;
+
+  // Add embedded images
+  $new_item->field_discussion_embed_images = $item->field_discussion_embed_images;
+  $new_item->group_ids = array();
+  $new_item->group_names = array();
+
+  if (!isset($item->og_group_ref['und'])) {
+    $new_item->group_id = 0;
+    $new_item->group_name = 'None';
+    $new_item->group_url = url('<front>');
+    $new_item->group_ids = array();
+    $new_item->group_names[] = 'None';
+  }
+  else {
+    $new_item->group_id = $item->og_group_ref['und'][0]['target_id'];
+    $new_item->group_name = supportgroups_feed_get_group_name($new_item->group_id);
+    $new_item->group_url = url('node/' . $new_item->group_id);
+
+    // add array of group ids for all groups
+    if (isset($item->og_group_ref['und']) && count($item->og_group_ref['und'])) {
+
+      foreach($item->og_group_ref['und'] as $value) {
+        $new_item->group_ids[] = $value['target_id'];
+        $new_item->group_names[] = supportgroups_feed_get_group_name($value['target_id']);
+      }
+    }
+  }
+  return $new_item;
+}
+
+/**
+ * Cache-backed function
+ * Return the group name for the given group ID
+ * @see supportgroups_feed_get_group_names
+ * @param bool $reset
+ */
+function supportgroups_feed_get_group_name($group_id) {
+  static $groups = NULL;
+  if (is_null($groups)) {
+    $groups = supportgroups_feed_get_group_names();
+  }
+  return $groups[$group_id];
+}
+
+
+/**
+ * Helper function to generate the cache ID (cid)
+ */
+function _supportgroups_feed_group_names_cid() {
+  return SUPPORTGROUPS_FEED_CACHE_PREFIX .'group-names';
+}
+
+/**
+ * Helper function to strip out extraneous comment information
+ *
+ * @param stdClass $comment
+ * @return stdClass Abbreviated comment info with only relevant fields
+ */
+function _supportgroups_feed_get_abbreviated_comment_info($comment) {
+  $new_comment = new stdClass();
+  $new_comment->cid = $comment->cid;
+  $new_comment->subject = $comment->subject;
+  $new_comment->uid = $comment->u_uid;
+
+  //Added the pid
+  $new_comment->pid = $comment->pid;
+  //Added the nid
+  $new_comment->nid = $comment->nid;
+
+  // Added the picture and name of the user
+  $new_comment->picture = $comment->picture;
+  $new_comment->name = $comment->name;
+
+  // Need to get bio info
+  $user_info = supportgroups_feed_get_user_info($comment->u_uid);
+  $new_comment->profile_bio = $user_info->profile_bio;
+
+  //drupal_get_path_alias('/user/'. $uid)
+  $new_comment->link = url("user/". $comment->u_uid);
+
+  $new_comment->points = userpoints_get_current_points($new_comment->uid);
+
+  // leave only the safe_value
+  $new_comment->comment_body = $comment->comment_body;
+  $safe_body = isset($new_comment->comment_body['und'][0]['safe_value']) ? $new_comment->comment_body['und'][0]['safe_value'] : isset($new_comment->comment_body['und'][0]['value']);
+
+  unset($new_comment->comment_body['und'][0]['format']);
+  unset($new_comment->comment_body['und'][0]['value']);
+
+  $new_comment->comment_body['und'][0]['safe_value'] = $safe_body;
+
+
+  $new_comment->comment_body['und'][0]['safe_value'] = trim($new_comment->comment_body['und'][0]['safe_value']);
+  $new_comment->thread = $comment->thread;
+  $new_comment->changed = $comment->changed;
+  $new_comment->thread = $comment->thread;
+  $new_comment->can_reply = stripos($comment->thread, '.') === FALSE;
+
+  return $new_comment;
+}
+/**
+ * Helper function to generate the cache ID (cid) for an activity item
+ */
+function _supportgroups_feed_activity_item_cid($nid) {
+  return SUPPORTGROUPS_FEED_CACHE_PREFIX .'act-item-'. $nid;
+}
+
+
+/**
+ * Helper function to build feed settings array for drupal_add_js
+ * @param array $settings
+ * @return array
+ */
+function _supportgroups_feed_init_feed_settings($id = 0, $type = 'user', $settings = array()) {
+  $settings['supportgroups_feed'] = array(
+    'index_override' => SUPPORTGROUPS_FEED_INDEX_OVERRIDE,
+    'activity' => array(
+      'time' => round(time() / 60) * 60, // initial timestamp at page load
+      'id' => $id, // id of node or user to pass in callbacks
+      'type' => $type,
+      'wrapper' => 'activity-items',
+      'max' => SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS,
+      'recent' => array(
+        'interval' => (SUPPORTGROUPS_FEED_DEFAULT_UPDATE_INTERVAL_FOR_AJAX * 1000), // convert to milliseconds
+        'new' => array(), // default holding string for new content to be appended to top of page
+        'running' => 0, // need a default to mark if the interval is running
+      ),
+    ),
+  );
+
+  // if this is the user feed, set a test to load more if there are less than 10 items on the page
+  if($type == 'user') {
+    $settings['supportgroups_feed']['activity']['past'] = array(
+      'check' => true,
+      'minimum' => 10, // minimum to be on the page
+    );
+  }
+  return $settings;
+}
+
+/**
+ * Helper function to build notifications settings array for drupal_add_js
+ * @param array $settings
+ * @return array
+ */
+function _supportgroups_feed_init_notification_settings($id = 0, $settings = array()) {
+  $settings['supportgroups_feed'] = array(
+    'notifications' => array(
+      //'time' => time() - (48 * 3600) - 60 * 60 * 24 * 7 * 100, // initial timestamp at page load - 2 days
+      'time' => time() - (48 * 3600), // initial timestamp at page load - 2 days
+      'current_time' => time(),
+      'id' => $id, // id user to pass in callbacks
+      'wrapper' => 'activity-notifications',
+      'max' => SUPPORTGROUPS_FEED_DEFAULT_NUM_RECORDS,
+      'interval' => (SUPPORTGROUPS_FEED_DEFAULT_UPDATE_INTERVAL_FOR_AJAX * 1000), // convert to milliseconds
+      'running' => 0, // need a default to mark if the interval is running
+    ),
+  );
+  return $settings;
+}
+
+/**
+ * Retrieve multiple user info items with as few cache calls as possible
+ *
+ * @see supportgroups_feed_get_multiple_cached_items()
+ *
+ * @param Array $nids
+ * @return Array
+ */
+function supportgroups_feed_get_user_info_multi($uids = array()) {
+  return supportgroups_feed_get_multiple_cached_items($uids, '_supportgroups_feed_user_info_cid', 'supportgroups_feed_get_user_info', '_supportgroups_feed_get_user_info_array_key');
+}
+
+/**
+ * Supporting function required to work with supportgroups_feed_get_multiple_cached_items
+ * Return the desired key for activity
+ * @param stdClass $item
+ */
+function _supportgroups_feed_get_user_info_array_key($item) {
+  return $item->data->uid;
+}
+
+/**
+ * Helper function to generate the cache ID (cid)
+ */
+function _supportgroups_feed_user_info_cid($uid) {
+  return SUPPORTGROUPS_FEED_CACHE_PREFIX .'user-info-'. $uid;
+}
+
+/**
+ * Helper function
+ * Boolean logic-- returns TRUE if the given type
+ * @param unknown_type $type
+ * @return boolean
+ */
+function _supportgroups_feed_track_activity_for_content_type($node_type) {
+  return in_array($node_type, _supportgroups_feed_activity_feed_node_types());
+}
+
+/**
+ * Helper function
+ * remove the given node from the activity list
+ * NOTE: since this is a costly operation (requires iterating through the entire array
+ * for now, just deleting the activity feed from cache and allowing it to rebuild on
+ * next request
+ * @param int $nid
+ */
+function _supportgroups_feed_remove_recent_activity($nid) {
+  // clear cache for the given id
+  _supportgroups_feed_activity_item_clear_cache($nid);
+
+  // Queue up this item to be deleted in hook_exit
+  _supportgroups_feed_delete_nodes(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID, $nid);
+}
+
+/**
+ * Helper function
+ * remove the given node from the group activity list
+ * NOTE: since this is a costly operation (requires iterating through the entire array
+ * for now, just deleting the activity feed from cache and allowing it to rebuild on
+ * next request
+ * @param int $nid
+ */
+function _supportgroups_feed_remove_recent_activity_for_gid($nid, $gid) {
+  // clear cache for the given id
+  _supportgroups_feed_activity_item_clear_cache($nid);
+
+  // Queue up this item to be deleted in hook_exit
+  _supportgroups_feed_delete_nodes(_supportgroups_feed_recent_activity_for_gid_cid($gid), $nid);
+}
+
+
+
+/**
+ * Fin
+ * //NOTE: PATCHED
+ * added static cache and hook_exit callback to save to cache once per page load
+ * Note: this is not a thread-safe or atomic operation, because there is a race condition
+ * e.g. user X and Y load different pages that have un-cached items on them. only the last user's
+ * cached items will get saved. This is a worthwhile trade-off though to cut down on what can occasionally
+ * be a costly cache save (serialize) for a potentially large number of URLs
+ * //END PATCH NOTE
+ *
+ * @param array $data
+ *   The data to save.
+ */
+function _supportgroups_feed_delete_nodes($cid = NULL, $nid = NULL) {
+  static $delete_queue = array();
+  static $items_to_delete = FALSE;
+
+  if (is_null($cid) && is_null($nid) && $items_to_delete) {
+    foreach ($delete_queue as $cid => $nids) {
+      watchdog('supportgroups_feed', 'Deleting $nids from CID: '. $cid .', '. print_r($nids, TRUE), array(),
+        WATCHDOG_ALERT);
+      _supportgroups_feed_remove_items_from_sorted_set_by_nid($cid, $nids);
+    }
+  }
+  else {
+    if (is_null($cid) || is_null($nid)) {
+      // one of the two values is invalid and we don't do anything
+    }
+    else {
+      if (!isset($delete_queue[$cid])) {
+        $delete_queue[$cid] = array();
+      }
+
+      $items_to_delete = TRUE;
+      $delete_queue[$cid][] = $nid;
+    }
+  }
+}
+
+/**
+ * Implementation of hook_exit
+ * This function triggers cleaning up nodes from caches if they are deleted
+ *
+ * @param String $destination
+ */
+function supportgroups_feed_exit($destination = NULL) {
+
+  _supportgroups_feed_delete_nodes();
+}
+
+
+
+
+/**
+ * Helper function to render list items and return array of them
+ * @param Array $vars
+ */
+function _supportgroups_feed_get_notifications($activity_count, $activity_items, $users, $more = FALSE) {
+  // loop the items and theme them
+  //TODO Craig will have this themed already so we just need to make the connections
+	$counter_max=0;
+	$list = array();
+  $timestamp = time();
+  // The key is the timestamp and they are not necessarily in order maybe
+  foreach($activity_items as $key => $item) {
+    //TODO possibly use the core theme('list') functions
+    //$list[$key] = 'FOO';
+    $path = url( 'node/'.$item['nid'], array( 'absolute' => TRUE ));
+    $display_title = substr( $item['display_title'], 0, 30 );
+    // Number of people who is part of your activity
+    $count = count($item['uids']);
+    // Last activity from a user
+    $user_index = array_shift( $item['uids']);
+    if( $item['type'] == 'like' ){
+      $list[$key] = theme('notification_list', array(
+        'username' => $users[$user_index]->name,
+        'title' => $display_title,
+        'description' => " <span class='heart'>&hearts;</span>s your post ",
+        'timestamp' => $key,
+        'path' => $path,
+        'count' => $count,
+        'user_picture' => $users[$user_index],
+        'class' => 'notification-item'
+       ) );
+    }
+    elseif( $item['type'] == 'comment_like' ){
+      $list[$key] = theme('notification_list', array(
+        'username' => $users[$user_index]->name,
+        'title' => $display_title,
+        'description' => " <span class='heart'>&hearts;</span>s your comment ",
+        'timestamp' => $key,
+        'path' => $path,
+        'count' => $count,
+        'user_picture' => $users[$user_index],
+        'class' => 'notification-item'
+       ) );
+    }
+    elseif( $item['type'] == 'reply' ){
+      $list[$key] = theme('notification_list', array(
+        'username' => $users[$user_index]->name,
+        'title' => $display_title,
+        'description' => " Replied to your comment ",
+        'timestamp' => $key,
+        'path' => $path,
+        'count' => $count,
+        'user_picture' => $users[$user_index],
+        'class' => 'notification-item'
+       ) );
+    }
+    elseif( $item['type'] == 'comment' ){
+      $list[$key] = theme('notification_list', array(
+        'username' => $users[$user_index]->name,
+        'title' => $display_title,
+        'description' => " Commented on your post ",
+        'timestamp' => $key,
+        'path' => $path,
+        'count' => $count,
+        'user_picture' => $users[$user_index],
+        'class' => 'notification-item'
+       ) );
+    }
+    // Ensure that value of timestamp is always earliest
+    if ($key < $timestamp) {
+      $timestamp = $key;
+    }
+
+    if( $counter_max < 19 ){
+      $counter_max++;
+    }
+    else{
+      break;
+    }
+
+  }
+  // Change the count to '' if it equals to 0
+  //TODO Re-evaluate why this is here
+  if( $activity_count == 0 ){
+    $activity_count = '';
+  }
+  if ($more  && !empty($list)) {
+    $list[$timestamp++] = '<li timestamp="' . $timestamp .'" id="more-notifications"
+    class="notification-item">More</li>';
+    watchdog('notification', ' more <pre>' . print_r($list,1));
+  }
+
+  // return the array of rendered list items
+  return $list;
+}
+
+
+/**
+ * Helper function to keep the recent activity items cache trimmed properly.
+ * We do this over cron so we don't have to do it on every call to supportgroups_feed_add_recent_activity
+ */
+function supportgroups_feed_trim_recent_activity_cache() {
+  // clean up duplicate notifications in the cache -- e.g. multiple comments on a single node
+  _supportgroups_feed_remove_items_from_sorted_set_by_nid(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID, array(), 0, TRUE);
+
+  _supportgroups_feed_trim_sorted_set_by_score(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID, strtotime('-1 day'));
+
+  // if the cache gets too big, we can return to trimming based on a max number of items
+  _supportgroups_feed_trim_sorted_set(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_CID, SUPPORTGROUPS_FEED_RECENT_ACTIVITY_MAX_ITEMS);
+}
+
+
+/**
+ * Helper function to keep the recent activity items cache trimmed properly.
+ * We do this over cron so we don't have to do it on every call to supportgroups_feed_add_recent_activity
+ */
+function supportgroups_feed_trim_recent_activity_notifications_cache() {
+  // trim by date first
+  // Todo We need to get the users currently stored
+  if (variable_get('supportgroups_individual_notification_cache', 0)) {
+    $uids = _supportgroups_get_notification_user_keys();
+    foreach ($uids as $uid) {
+      _supportgroups_feed_trim_sorted_set_by_score(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID . '-'
+        . $uid, strtotime(SUPPORTGROUPS_FEED_ACTIVITY_NOTIFICATIONS_TIME_LIMIT));
+
+    }
+  }
+  else {
+    _supportgroups_feed_trim_sorted_set_by_score(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID, strtotime(SUPPORTGROUPS_FEED_ACTIVITY_NOTIFICATIONS_TIME_LIMIT));
+  }
+
+  // remove duplicates
+  supportgroups_feed_trim_duplicates_from_recent_activity_notifications_cache();
+  // if the number of recent activity notifications grows too big then we should re-enable this
+  //_supportgroups_feed_trim_sorted_set(SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_CID, SUPPORTGROUPS_FEED_RECENT_ACTIVITY_NOTIFICATIONS_MAX_ITEMS);
+}
+
+
+/* ***************************************
+ * General utility functions
+ * ***************************************/
+/**
+ * Binary search method to look for an element in an array of numbers
+ *
+ * Requires input $array to be sorted from low to high
+ * Much faster than in_array (~5x per post), since it costs only up to 1/2N vs up to N for in_array to find the given value
+ * Taken from http://www.php.net/manual/en/function.in-array.php#92460
+ *
+ * @param mixed $elem
+ * @param Array $array
+ * @return boolean
+ */
+function fast_in_array($elem, $array) {
+  $top = sizeof($array) -1;
+  $bot = 0;
+
+  while($top >= $bot)
+  {
+    $p = floor(($top + $bot) / 2);
+    if ($array[$p] < $elem) $bot = $p + 1;
+    elseif ($array[$p] > $elem) $top = $p - 1;
+    else return TRUE;
+  }
+
+  return FALSE;
+}
+
+/***************************
+ * Theme helper functions
+ ***************************/
+
+function supportgroups_feed_check_comment_parent( $cid ){
+  // Make sure that the comment is not a parent of another comment
+  $result_pid = db_query("SELECT cid FROM {comment}
+    WHERE pid = :cid", array( ':cid' => $cid) );
+  foreach( $result_pid as $row_pid ){
+    // if there exists a record, then we cannot delete this comment
+    return false;
+    break;
+  }
+  return true;
+}
+
+/**
+ * Cloned function of comment_get_thread to deliver custom sort and limit for initial load of comments
+ * @param object $node
+ * @param string $mode
+ * @param integer $comments_per_page
+ * @return array
+ */
+function _supportgroups_feed_comment_get_thread($node, $mode, $comments_per_page) {
+  $query = db_select('comment', 'c')->extend('PagerDefault');
+  $query->addField('c', 'cid');
+  $query->condition('c.nid', $node->nid)->addTag('node_access')->addTag('comment_filter')->addMetaData('node', $node)->limit($comments_per_page);
+
+  $count_query = db_select('comment', 'c');
+  $count_query->addExpression('COUNT(*)');
+  $count_query->condition('c.nid', $node->nid)->addTag('node_access')->addTag('comment_filter')->addMetaData('node', $node);
+
+  if (!user_access('administer comments')) {
+    $query->condition('c.status', COMMENT_PUBLISHED);
+    $count_query->condition('c.status', COMMENT_PUBLISHED);
+  }
+  if ($mode === COMMENT_MODE_FLAT) {
+    $query->orderBy('c.cid', 'ASC');
+  }
+  else {
+    // See comment above. Analysis reveals that this doesn't cost too
+    // much. It scales much much better than having the whole comment
+    // structure.
+    $query->addExpression('SUBSTRING(c.thread, 1, (LENGTH(c.thread) - 1))', 'torder');
+    $query->orderBy('c.cid', 'DESC');
+  }
+
+  $query->setCountQuery($count_query);
+  $cids = $query->execute()->fetchCol();
+
+  return $cids;
+}
+
+/**
+ *  This function will compare arrays and sort by timestamp. Required by usort()
+ *
+ */
+function _supportgroups_feed_sort_timestamp_helper($a, $b){
+  if( $a == $b ){
+    return 0;
+  }
+  return ( $a < $b ) ? 1 : -1;
+}

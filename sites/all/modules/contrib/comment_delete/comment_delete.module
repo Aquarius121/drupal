@@ -1,0 +1,340 @@
+<?php
+/**
+ * @file
+ * comment_delete.module
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function comment_delete_permission() {
+  return array(
+    'delete own comment' => array(
+      'title' => t('Delete own comments'),
+      'description' => t('Allow user to delete their own comments within threshold.'),
+    ),
+    'delete own comment anytime' => array(
+      'title' => t('Delete own comments anytime'),
+      'description' => t('Allow user to delete their own comments anytime.'),
+    ),
+    'delete any comment' => array(
+      'title' => t('Delete any comment'),
+      'description' => t('Allow user to delete any comment within threshold.'),
+    ),
+    'delete any comment anytime' => array(
+      'title' => t('Delete any comment anytime'),
+      'description' => t('Allow user to delete any comment anytime.'),
+    ),
+    'delete comment replies' => array(
+      'title' => t('Delete comment replies'),
+      'description' => t('Allow user to delete replies to their own comments.'),
+    ),
+    'move comment replies' => array(
+      'title' => t('Move comment replies'),
+      'description' => t('Allow user to move replies to their own comments.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function comment_delete_menu() {
+  $items['admin/content/comment/deletion'] = array(
+    'title' => 'Deletion',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('comment_delete_settings_form'),
+    'access arguments' => array('administer comments'),
+    'file' => 'comment_delete.admin.inc',
+    'weight' => 10,
+    'type' => MENU_LOCAL_TASK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function comment_delete_menu_alter(&$items) {
+  $items['comment/%/delete']['page callback'] = 'drupal_get_form';
+  $items['comment/%/delete']['page arguments'] = array('comment_delete_options_form', 1);
+  $items['comment/%/delete']['access callback'] = 'comment_delete_check_access';
+  $items['comment/%/delete']['access arguments'] = array(1);
+  unset($items['comment/%/delete']['file']);
+}
+
+/**
+ * Implements hook_comment_view().
+ */
+function comment_delete_comment_view($comment, $view_mode, $langcode) {
+  if (comment_delete_check_access($comment->cid)) {
+    $comment->content['links']['comment']['#links']['comment-delete'] = array(
+      'title' => t('delete'),
+      'href' => 'comment/'. $comment->cid .'/delete',
+      'html' => TRUE,
+    );
+  }
+}
+
+/**
+ * Checks user access to delete specified comment.
+ *
+ * @param $cid int
+ *   Unique comment identification number.
+ * @return boolean
+ *   Returns TRUE if user has access and FALSE otherwise.
+ */
+function comment_delete_check_access($cid) {
+  if (empty($cid) || !is_numeric($cid)) return FALSE;
+  global $user;
+
+  // Retrieve specified comment object.
+  $comment = comment_load($cid);
+  if (!isset($comment->cid)) return FALSE;
+  $threshold = 0;
+
+  // Calculate allowable comment deletion threshold.
+  if ($threshold_setting = variable_get('comment_delete_threshold', 0)) {
+    $threshold = (time() - $comment->created) > $threshold_setting;
+  }
+
+  // Check permissions for users own comment.
+  if ((user_access('delete any comment') && !$threshold) || user_access('delete any comment anytime')) {
+    return TRUE;
+  }
+
+  // Check permissions for any comment.
+  if (((user_access('delete own comment') && !$threshold) || user_access('delete own comment anytime')) && $user->uid == $comment->uid) {
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+/**
+ * Comment deletion options and confirmation form.
+ *
+ * @param $cid int
+ *   Unique comment identification number.
+ */
+function comment_delete_options_form($form, &$form_state, $cid) {
+  $comment = comment_load($cid);
+  if (!isset($comment->cid)) drupal_goto('<front>');
+  $form_state['storage']['comment'] = $comment;
+  $default = variable_get('comment_delete_default', 0);
+  $options = array();
+
+  // Define available comment deletion options.
+  if (user_access('delete comment replies')) {
+    $options[0] = t('Delete comment and replies');
+  }
+  if (user_access('move comment replies')) {
+    $options[1] = t('Delete comment and move replies up');
+  }
+  $options[2] = t('Delete comment and keep replies');
+
+  // Provide comment deletion radio options.
+  if (count($options) > 1) {
+    $form['action'] = array(
+      '#type' => 'radios',
+      '#title' => t('How should replies to this comment be handled?'),
+      '#options' => $options,
+      '#required' => TRUE,
+      '#default_value' => isset($options[$default]) ? $default : 2,
+    );
+  }
+
+  // Perform default action when access is limited.
+  else {
+    $form['action'] = array(
+      '#type' => 'hidden',
+      '#value' => 2,
+    );
+  }
+
+  // Return delete comment confirmation form.
+  $message = t('Are you sure you want to delete the comment %title?', array('%title' => $comment->subject));
+  return confirm_form($form, $message, "node/{$comment->nid}", NULL, t('Delete'));
+}
+
+/**
+ * Submission handler for comment deletion form.
+ */
+function comment_delete_options_form_submit($form, $form_state) {
+  $comment = $form_state['storage']['comment'];
+  switch ($form_state['values']['action']) {
+
+    // Delete comment and replies.
+    case 0:
+      comment_delete($comment->cid);
+      break;
+
+    // Delete comment and move replies.
+    case 1:
+      comment_delete_move_replies($comment);
+      break;
+
+    // Delete comment and keep replies.
+    case 2:
+      comment_delete_keep_replies($comment);
+      break;
+  }
+
+  // Display success message and redirect if destination not set.
+  if ($message = variable_get('comment_delete_message', '')) {
+    drupal_set_message(t($message));
+  }
+  if (!isset($_GET['destination'])) {
+    drupal_goto('node/'. $comment->nid);
+  }
+}
+
+/**
+ * Removes comment while keeping all replies.
+ *
+ * @param $comment object
+ *   Fully loaded comment object.
+ */
+function comment_delete_keep_replies($comment) {
+
+  // Retrieve first-level comment replies count.
+  $replies = db_select('comment', 'c')
+    ->fields('c', array('cid'))
+    ->condition('c.pid', $comment->cid, '=')
+    ->countQuery()
+    ->execute()->fetchField();
+
+  // Remove subject/body when replies exist.
+  if ($replies > 0) {
+    $comment->subject = '';
+    $comment->comment_body[$comment->language][0]['value'] = '';
+    comment_save($comment);
+  }
+
+  // Remove entire comment when no replies exist.
+  else {
+    comment_delete($comment->cid);
+  }
+}
+
+/**
+ * Moves comment replies up one thread.
+ *
+ * @param $comment object
+ *   Fully loaded comment object.
+ */
+function comment_delete_move_replies($comment) {
+
+  // Retrieve all first-level comment replies to be updated.
+  $replies = db_select('comment', 'c')
+    ->fields('c', array('cid'))
+    ->condition('c.pid', $comment->cid, '=')
+    ->execute();
+
+  // Update parent comment target ID.
+  foreach ($replies as $reply) {
+    $reply_comment = comment_load($reply->cid);
+    $reply_comment->pid = $comment->pid;
+    comment_save($reply_comment);
+  }
+
+  // Delete the parent comment record.
+  comment_delete($comment->cid);
+
+  // Re-thread comments attached to node.
+  comment_delete_threading($comment->nid);
+}
+
+/**
+ * Re-threads comments attached to an entity.
+ *
+ * @param $nid int
+ *   The node ID of which to rethread comments.
+ */
+function comment_delete_threading($nid) {
+  $comments = array();
+
+  // Retrieve all comments attached to entity.
+  $results = db_select('comment', 'c')
+    ->fields('c', array('cid', 'pid', 'created'))
+    ->condition('c.nid', $nid)
+    ->orderBy('c.created', 'ASC')
+    ->execute();
+  foreach ($results as $data) {
+    $comments[] = (array) $data;
+  }
+
+  // Collect and calculate new comment threading strings.
+  $tree = comment_delete_threading_tree($comments);
+  $threads = comment_delete_threading_values($tree);
+
+  // Update comment threads in database table.
+  foreach ($threads as $cid => $thread_string) {
+    db_update('comment')
+      ->fields(array('thread' => $thread_string .'/'))
+      ->condition('cid', $cid)
+      ->execute();
+  }
+}
+
+/**
+ * Creates associative array of threaded comments.
+ *
+ * @param $comments array
+ *   Flat array of comment records.
+ * @param $pid int
+ *   Parent ID used to recursively create array.
+ * @return array
+ *   Associative array of threaded comments.
+ */
+function comment_delete_threading_tree(array $comments, $pid = 0) {
+  $branch = array();
+  foreach ($comments as $comment) {
+    if ($comment['pid'] == $pid) {
+      $children = comment_delete_threading_tree($comments, $comment['cid']);
+      if ($children) {
+        $comment['children'] = $children;
+      }
+      $branch[] = $comment;
+    }
+  }
+  return $branch;
+}
+
+/**
+ * Converts threaded comments into associative array of thread strings.
+ *
+ * @param $tree array
+ *   Associtiave array containing comment threading tree.
+ * @param $prefix string
+ *   Prefix to be prepended to thread strings.
+ * @param $threading array
+ *   Associative array of existing thread strings.
+ * @return array
+ *   Accociative array of comment thread strings.
+ */
+function comment_delete_threading_values($tree, $prefix = '', $threading = array(), $init = TRUE) {
+  $thread = $init ? '01' : '00';
+  uasort($tree, 'comment_delete_threading_sort');
+  foreach ($tree as $comment) {
+    $string = (!empty($prefix) ? $prefix .'.' : '') . int2vancode(sprintf('%02d', $thread++));
+    $threading[$comment['cid']] = $string;
+    if (isset($comment['children'])) {
+      $children = $comment['children'];
+      uasort($children, 'comment_delete_threading_sort');
+      $child_threading = comment_delete_threading_values($children, $string, $threading, FALSE);
+      $threading += $child_threading;
+    }
+  }
+  return $threading;
+}
+
+/**
+ * Sorts associative array of comments by creation time.
+ */
+function comment_delete_threading_sort($a, $b) {
+  if ($a['created'] == $b['created']) {
+    return 0;
+  }
+  return ($a['created'] < $b['created']) ? -1 : 1;
+}

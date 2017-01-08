@@ -1,0 +1,156 @@
+<?php
+/**
+ * @file
+ * Code for the supportgroups_views feature.
+ */
+
+include_once 'supportgroups_views.features.inc';
+
+//Constant definitions
+define('SUPPORTGROUPS_VIEWS_CACHE_PREFIX', 'sg-vi-');
+define('SUPPORTGROUPS_VIEWS_CACHE_TABLE', 'cache');
+define('SUPPORTGROUPS_VIEWS_CACHE_LENGTH_USER_COUNT', '+30 minutes');
+define('SUPPORTGROUPS_VIEWS_CACHE_LENGTH_ACTIVITY_COUNT', '+5 minutes');
+
+/**
+ * Cache-enabled function
+ * Retrieve the user count for the given group ID
+ * uses a static cache as well as drupal cache to store the entire list of group IDs
+ *
+ * @param Int $gid
+ * @param bool $reset
+ */
+function supportgroups_views_get_group_user_count($gid, $reset = FALSE) {
+  static $groups_cache = array();
+
+  if (isset($groups_cache[$gid])) {
+    return $groups_cache[$gid];
+  }
+
+  if ($gid) {
+    $cid = _supportgroups_views_group_user_count_cid();
+
+    if ($reset) {
+      $groups_cache = _supportgroups_views_get_group_user_counts();
+      cache_set($cid, $groups_cache, SUPPORTGROUPS_VIEWS_CACHE_TABLE, strtotime(SUPPORTGROUPS_VIEWS_CACHE_LENGTH_USER_COUNT));
+
+      return isset($groups_cache[$gid]) ? $groups_cache[$gid] : 0;
+    }
+
+    // attempt to retrieve from cache
+    $cache = cache_get($cid, SUPPORTGROUPS_VIEWS_CACHE_TABLE);
+
+    if ($cache) {
+      $groups_cache = $cache->data;
+      return isset($groups_cache[$gid]) ? $groups_cache[$gid] : 0;;
+    }
+    elseif (!$reset) {
+      return supportgroups_views_get_group_user_count($gid, TRUE);
+    }
+  }
+  return 0;
+}
+
+
+/**
+ * Helper function to generate the cache ID (cid)
+ */
+function _supportgroups_views_group_user_count_cid() {
+  return SUPPORTGROUPS_VIEWS_CACHE_PREFIX .'group-user-counts';
+}
+
+/**
+ * Worker function to return array of member counts keyed by group ID
+ * @return Array
+ */
+function _supportgroups_views_get_group_user_counts() {
+  $counts = array();
+  $query = "SELECT gid, COUNT(etid) AS count
+            FROM {og_membership} og_membership
+            INNER JOIN {users} users ON og_membership.etid = users.uid
+            WHERE entity_type = 'user' AND state=1 AND status=1
+            GROUP BY gid";
+  $result = db_query($query);
+  foreach( $result AS $row){
+    $counts[$row->gid] = $row->count;
+  }
+  return $counts;
+}
+
+/**
+ * Cache-enabled function
+ * Retrieve the user count for the given group ID
+ * uses a static cache as well as drupal cache to store the entire list of group IDs
+ *
+ * @param Int $gid
+ * @param bool $reset
+ */
+function supportgroups_views_get_group_activity_count($gid, $reset = FALSE) {
+  static $groups_cache = array();
+
+  if (isset($groups_cache[$gid])) {
+    return $groups_cache[$gid];
+  } elseif($gid == 'all' && count($groups_cache) > 0) {
+    return $groups_cache;
+  }
+
+  if ($gid) {
+    $cid = _supportgroups_views_group_activity_count_cid();
+
+    if ($reset) {
+      $groups_cache = _supportgroups_views_get_group_activity_counts();
+      cache_set($cid, $groups_cache, SUPPORTGROUPS_VIEWS_CACHE_TABLE, strtotime(SUPPORTGROUPS_VIEWS_CACHE_LENGTH_ACTIVITY_COUNT));
+
+      // add exception to return all
+      if($gid = 'all') {
+        return $groups_cache;
+      }
+
+      return isset($groups_cache[$gid]) ? $groups_cache[$gid] : 0;
+    }
+
+    // attempt to retrieve from cache
+    $cache = cache_get($cid, SUPPORTGROUPS_VIEWS_CACHE_TABLE);
+
+    if ($cache) {
+      $groups_cache = $cache->data;
+
+      // add all exception
+      if($gid == 'all') {
+        return $groups_cache;
+      }
+
+      return isset($groups_cache[$gid]) ? $groups_cache[$gid] : 0;
+    }
+    elseif (!$reset) {
+      return supportgroups_views_get_group_activity_count($gid, TRUE);
+    }
+  }
+  return 0;
+}
+
+
+/**
+ * Helper function to generate the cache ID (cid)
+ */
+function _supportgroups_views_group_activity_count_cid() {
+  return SUPPORTGROUPS_VIEWS_CACHE_PREFIX .'group-activity-counts';
+}
+
+/**
+ * Worker function to return array of  counts keyed by group ID
+ * @return Array
+ */
+function _supportgroups_views_get_group_activity_counts() {
+  $counts = array();
+  $query = "SELECT gid, COUNT(etid) AS node_count, SUM(comment_count) as comment_count
+            FROM {og_membership} og_membership
+            LEFT JOIN {node_comment_statistics} ncs ON og_membership.etid = ncs.nid
+            WHERE entity_type = 'node'
+            GROUP BY gid";
+  $result = db_query($query);
+  foreach( $result AS $row){
+    $counts[$row->gid] = $row->node_count + $row->comment_count;
+  }
+  return $counts;
+}

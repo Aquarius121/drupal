@@ -1,0 +1,12 @@
+name = SupportGroups Flags
+core = 7.x
+package = Support Groups Features
+dependencies[] = supportgroups_user
+
+features[features_api][] = api:2
+features[flag][] = flag_comment
+features[flag][] = flag_content
+features[flag][] = flag_user
+features[flag][] = like
+features[flag][] = like_comments
+features_exclude[dependencies][flag] = flag

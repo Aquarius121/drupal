@@ -1,0 +1,375 @@
+<?php
+define('CUSTOM_REPORTS_CACHE_PREFIX', 'mod-');
+define('CUSTOM_REPORTS_CACHE_TABLE', 'cache');
+define('CUSTOM_REPORTS_CACHE_CID', 'custom_reports_page');
+define('CUSTOM_REPORTS_CACHE_TTL', '-1 days');
+/**
+ * This function will create permissions to view the reporting page
+ *
+ */
+function custom_reports_permission(){
+  // Return the name of the permission
+  return array(
+      'access custom reporting' => array(
+      'title' => t('Access Custom Reporting')
+    )
+  );
+}
+
+
+/**
+ *  This function will create the page for the reporting
+ *
+ */
+function custom_reports_menu(){
+  $items = array();
+  // Creates the page admin/reports/customreports
+  $items['reports/customreports'] = array(
+    'title' => 'Custom Reports',
+    'page callback' => 'custom_reports_page_display',
+        //KEVIN-- this should be access arguments, and the permission name should be passed in an array.
+        // per https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_menu/7
+        // access callback defaults to user_access, which is what you want
+      //'access callback' => 'access custom reporting',
+      // CHANGED-- Thanks. Added the access argument
+    'access arguments' => array('access custom reporting'),
+    'type' => MENU_CALLBACK
+  );
+  $items['reports/customreports/csv'] = array(
+    'title' => 'Custom Reports',
+    'page callback' => 'custom_reports_download_csv',
+    'access arguments' => array('access custom reporting'),
+    'type' => MENU_CALLBACK
+  );
+  return $items;
+}
+
+
+/**
+ *  This function will create templates to use
+ *
+ */
+function custom_reports_theme(){
+  return array(
+      // Template for individual rows
+      'reportRow' => array( 'arguments' => array( 'comments' => NULL,
+                                                 'discussion' => NULL,
+                                                 'private_messages' => NULL,
+                                                 'register' => NULL,
+                                                 'access' => NULL,
+                                                 'login' => NULL,
+                                                 'comments_replies' =>NULL,
+                                                 'users_comment' => NULL,
+                                                 'post_comments' => NULL,
+                                                 'users_discussion' => NULL,
+                                                 'date' => NULL
+                                                 ), 'template' => 'templates/reportRow'),
+      // Template to wrap report data in html tags( div and table tags)
+      'reportTable' => array( 'arguments' => array( 'report' => NULL), 'template' => 'templates/reportTable'),
+      // Template for individual rows CSV
+      'reportRowCSV' => array( 'arguments' => array( 'comments' => NULL,
+                                                 'discussion' => NULL,
+                                                 'private_messages' => NULL,
+                                                 'register' => NULL,
+                                                 'access' => NULL,
+                                                 'login' => NULL,
+                                                 'comments_replies' =>NULL,
+                                                 'users_comment' => NULL,
+                                                 'post_comments' => NULL,
+                                                 'users_discussion' => NULL,
+                                                 'date' => NULL
+                                                 ), 'template' => 'templates/reportRowCSV'),
+      // Template to wrap report data in html tags( div and table tags) CSV
+      'reportTableCSV' => array( 'arguments' => array( 'report' => NULL), 'template' => 'templates/reportTableCSV')
+
+  );
+}
+
+
+/**
+ * This function will return the output of the reporting page
+ *
+ */
+function custom_reports_download_csv(){
+  // Check to see if reporting is cached
+  $cached = cache_get( CUSTOM_REPORTS_CACHE_CID, CUSTOM_REPORTS_CACHE_TABLE);
+  if( $cached){
+    $report_data = $cached->data;
+  }
+  else{
+    // Get the results
+    $report_data = custom_reports_data();
+    cache_set(CUSTOM_REPORTS_CACHE_CID, $report_data, CUSTOM_REPORTS_CACHE_TABLE, strtotime(CUSTOM_REPORTS_CACHE_TTL) );
+  }
+  // add commas to all elements in the array
+  $report_csv = custom_reports_convert_csv( $report_data);
+  // send response headers to the browser
+  drupal_add_http_header('Content-Type', 'text/csv');
+  drupal_add_http_header('Content-Disposition', 'attachment;filename=csvfile.csv');
+  print theme('reportTableCSV', array( 'report' => $report_csv) );
+  drupal_exit();
+}
+
+/**
+ * This function will return an array that will be separated by commas
+ */
+function custom_reports_convert_csv( $report_data){
+  $csv_row = '';
+  foreach( $report_data as $key=>$value ){
+    //$csv_row[] = custom_reports_convert_to_csv( $value );
+    $csv_row .= theme('reportRowCSV', array( 'comments' => $value['comments'],
+                              'discussions' => $value['discussions'],
+                              'private_messages' => $value['private_messages'],
+                              'register' => $value['register'],
+                              'login' => $value['login'],
+                              'access' => $value['access'],
+                              'comments_replies' => $value['comments_replies'],
+                              'users_comment' => $value['users_comment'],
+                              'post_comments' => $value['post_comments'],
+                              'users_discussion' => $value['users_discussion'],
+                              'date' => $value['date']));
+  }
+  return $csv_row;
+}
+
+/**
+ * This function will combine all array elements into csv row
+ */
+function custom_reports_convert_to_csv( $report_row ){
+  $csv_row_output = '';
+  foreach( $report_row as $element ){
+    $csv_row_output .= $element.",";
+  }
+  return $csv_row_output;
+}
+
+/**
+ *
+ */
+
+/**
+ * This function will return the output of the reporting page
+ *
+ */
+function custom_reports_page_display(){
+  // Need to create a table with the following categories
+  // Date, Register, Log-in, Access, #users who commented, #users who created new discussion, New Discussion, #Posts Received Comments , #comments
+  // Private Messages, #users who receive email notifications, #replies to comments
+  // Check to see if reporting is cached
+  $cached = cache_get( CUSTOM_REPORTS_CACHE_CID, CUSTOM_REPORTS_CACHE_TABLE);
+  if( $cached){
+    $report_data = $cached->data;
+  }
+  else{
+    // Get the results
+    $report_data = custom_reports_data();
+    cache_set(CUSTOM_REPORTS_CACHE_CID, $report_data, CUSTOM_REPORTS_CACHE_TABLE, strtotime(CUSTOM_REPORTS_CACHE_TTL) );
+  }
+  // theme each row
+  $themed_rows = custom_reports_theme_rows( $report_data);
+  // theme entire table
+  $content = theme('reportTable', array( 'report' => $themed_rows) );
+  return $content;
+}
+
+/**
+ * This function will create the data for the report
+ */
+function custom_reports_data(){
+  $report_data = array();
+  // This for loop will produce the data in the last 30 days.  We will not include the present day
+  // custom_reports_records will return the individual row.  The argument tells the function how far back to go to pull in the data
+  for( $i = 0; $i < 30; $i++){
+    // Will return the required data at a certain day interval
+    $report_data[] = custom_reports_row($i);
+  }
+  // Theme the data
+  return $report_data;
+}
+
+/**
+ * Helper function for custom_reports_data.  Takes in a number that will represent one of the last 30 days
+ */
+function custom_reports_row( $day_counter ){
+
+  $day_upperbound = strtotime('-'. $day_counter + 1 .' days');
+  $day_lowerbound = strtotime('-'. $day_counter .' days');
+
+  // These variables will return the data needed for the reporting table
+  // Each of these functions will use the day_lowerbound and day_upperbound
+  // to get the data at that certain day.
+  $comments = custom_reports_data_comments( $day_lowerbound, $day_upperbound);
+  $discussions = custom_reports_data_discussions( $day_lowerbound, $day_upperbound);
+  $private_messages = custom_reports_data_pm( $day_lowerbound, $day_upperbound);
+  $register = custom_reports_data_register( $day_lowerbound, $day_upperbound);
+  $login = custom_reports_data_login( $day_lowerbound, $day_upperbound);
+  $access = custom_reports_data_access( $day_lowerbound, $day_upperbound);
+  $comments_replies = custom_reports_data_comments_replies( $day_lowerbound, $day_upperbound);
+  $users_comment = custom_reports_data_users_comment( $day_lowerbound, $day_upperbound);
+  $post_comments = custom_reports_data_post_comments( $day_lowerbound, $day_upperbound);
+  $users_discussion = custom_reports_data_users_discussion( $day_lowerbound, $day_upperbound);
+  $comments_notified = custom_reports_data_users_comments_notified( $day_lowerbound, $day_upperbound);
+  $report_row = array( 'comments' => $comments,
+                        'discussions' => $discussions,
+                        'private_messages' => $private_messages,
+                        'register' => $register,
+                        'login' => $login,
+                        'access' => $access,
+                        'comments_replies' => $comments_replies,
+                        'users_comment' => $users_comment,
+                        'post_comments' => $post_comments,
+                        'users_discussion' => $users_discussion,
+                        'comments_notified' => $comments_notified,
+                        'date' => date('Y-m-d', $day_lowerbound)
+  );
+  return $report_row;
+}
+
+
+/**
+ *  This function will theme each row of the $report_data
+ */
+function custom_reports_theme_rows( $report_data ){
+  $themed_row = '';
+  foreach( $report_data as $key=>$value){
+    $themed_row .= theme('reportRow', array( 'comments' => $value['comments'],
+                              'discussions' => $value['discussions'],
+                              'private_messages' => $value['private_messages'],
+                              'register' => $value['register'],
+                              'login' => $value['login'],
+                              'access' => $value['access'],
+                              'comments_replies' => $value['comments_replies'],
+                              'users_comment' => $value['users_comment'],
+                              'post_comments' => $value['post_comments'],
+                              'users_discussion' => $value['users_discussion'],
+                              'comments_notified' => $value['comments_notified'],
+                              'date' => $value['date']));
+  }
+  return $themed_row;
+}
+
+/**************************** Helper Functions to return specific data *************************************/
+/**
+ * This function will return the total comments on a certain day
+ */
+function custom_reports_data_comments( $start, $end){
+  $result = db_query("SELECT count(cid) as cid FROM {comment} where created > :start
+                        AND created <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->cid;
+  }
+}
+
+/**
+ * Return number of comments notified on for a given day
+ * @param Int $start
+ * @param Int $end
+ */
+function custom_reports_data_users_comments_notified( $start, $end){
+  $result = db_query("SELECT count(c.cid) as count
+                      FROM {comment} c
+                      INNER JOIN {comment_notify} cn ON c.cid = cn.cid
+                      WHERE created > :start
+                        AND created <= :end
+                        AND cn.notify
+                        AND cn.notified", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->count;
+  }
+}
+
+/**
+ * This function will return the total discussion on a certain day
+ */
+function custom_reports_data_discussions( $start, $end){
+  $result = db_query("SELECT count(nid) as nid FROM {node} where created > :start
+                        AND created <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->nid;
+  }
+}
+
+/**
+ * This function will return the total private messages on a certain day
+ */
+function custom_reports_data_pm( $start, $end){
+  $result = db_query("SELECT count(mid) as mid FROM {pm_message} where timestamp > :start
+                        AND timestamp <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->mid;
+  }
+}
+
+/**
+ * This function will return the total registered users on a certain day
+ */
+function custom_reports_data_register( $start, $end){
+  $result = db_query("SELECT count(uid) as uid FROM {users} where created > :start
+                        AND created <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->uid;
+  }
+}
+
+/**
+ * This function will return the total logged-in users on a certain day
+ */
+function custom_reports_data_login( $start, $end){
+  $result = db_query("SELECT count(uid) as uid FROM {users} where login > :start
+                        AND login <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->uid;
+  }
+}
+
+/**
+ * This function will return the total users who access the site on a certain day
+ */
+function custom_reports_data_access( $start, $end){
+  $result = db_query("SELECT count(uid) as uid FROM {users} where access > :start
+                        AND access <= :end ", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->uid;
+  }
+}
+
+/**
+ * This function will return the total replies on a comment on a certain day
+ */
+function custom_reports_data_comments_replies( $start, $end){
+  $result = db_query("SELECT count(cid) as cid FROM {comment} where created > :start
+                        AND created <= :end  AND pid != 0", array( ':start' => $start, ':end' => $end) );
+  foreach( $result as $row){
+    return $row->cid;
+  }
+}
+
+/**
+ *  This function will return the number of users who commented
+ */
+function custom_reports_data_users_comment( $start, $end ){
+  $result = db_query("SELECT uid FROM {comment}
+      where created > :start AND created <= :end
+      GROUP BY uid", array( ':start' => $start, ':end' => $end) );
+  return $result->rowCount();
+}
+
+/**
+ *  This function will return the number of post that has comments
+ */
+function custom_reports_data_post_comments( $start, $end ){
+  $result = db_query("SELECT nid FROM {comment}
+      where created > :start AND created <= :end
+      GROUP BY nid", array( ':start' => $start, ':end' => $end) );
+  return $result->rowCount();
+}
+
+/**
+ *  This function will return the number of users who created a discussion
+ */
+function custom_reports_data_users_discussion( $start, $end ){
+  $result = db_query("SELECT uid FROM {node}
+      where created > :start AND created <= :end
+      GROUP BY uid", array( ':start' => $start, ':end' => $end) );
+  return $result->rowCount();
+}

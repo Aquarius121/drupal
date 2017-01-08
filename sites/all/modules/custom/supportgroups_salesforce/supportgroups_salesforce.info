@@ -1,0 +1,7 @@
+name = Supportgroups Salesforce Helper
+description = Helper module to build mappings to salesforce objects.
+package = Support Groups
+version = VERSION
+core = 7.x
+files[] = supportgroups_salesforce.module
+files[] = supportgroups_salesforce.user.tokens.inc

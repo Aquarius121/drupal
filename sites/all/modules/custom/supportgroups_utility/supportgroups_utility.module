@@ -1,0 +1,398 @@
+<?php
+
+/*
+This function will automatically assign a user to a group or remove them once they click join or delete.
+*/
+function supportgroups_utility_init() {
+  // Need to change this in the future
+  global $user;
+
+  if ($user->uid) {
+    if (drupal_is_front_page()) {
+      drupal_goto('user/'.$user->uid);
+    }
+    else if (arg(0) == 'group') {
+      if (arg(3) == 'unsubscribe') {
+        og_ungroup('node', arg(2), $entity_type = 'user', $etid = NULL);
+        drupal_set_message('You have been successfully removed from the group');
+        drupal_goto('node/'.arg(2));
+      }
+      else if (arg(3) == 'subscribe'){
+        og_group('node', arg(2), array('entity' => $user->uid));
+        drupal_set_message("You have successfully joined a group. Now you can create a discussion.");
+        drupal_goto('node/'. arg(2));
+      }
+    }
+  }
+}
+
+/**
+ *  Implementation of hook enable
+ */
+function supportgroups_utility_enable() {
+  db_query("UPDATE {system} SET weight = 2 WHERE name = 'supportgroups_utility'");
+}
+
+/**
+ *  Implements hook_block_info().
+ *
+ */
+function supportgroups_utility_block_info(){
+  $blocks = array();
+  $blocks['supportgroups_utility_advert'] = array(
+    'info' => t('Rotating advert'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ *  Implements hook_block_view().
+ */
+function supportgroups_utility_block_view( $delta = '' ){
+  $blocks = array();
+  switch( $delta ){
+    case 'supportgroups_utility_advert':
+      $blocks['content'] = supportgroups_utility_rotating_advert();
+      break;
+  }
+  return $blocks;
+}
+
+function supportgroups_utility_rotating_advert() {
+  /*
+  $path = base_path() . drupal_get_path('module', 'supportgroups_utility') .'/images';
+  $banner1 = $path . '/300x250_1.png';
+  $banner2 = $path . '/300x250_2.png';
+  $banner3 = $path . '/300x250_3.png';
+  $banner4 = $path . '/300x250_4.png';
+  $banner5 = $path . '/300x250_5.png';
+  $banner6 = $path . '/300x250_6.png';
+  $banners = array($banner1, $banner2, $banner3, $banner4, $banner5, $banner6);
+  shuffle($banners);
+
+  $output = '<div class="ad-container" style="text-align: center;">';
+  $output .= '<img src="' . $banners[0] . '" alt="">';
+  $output .= '</div>';
+  */
+
+  $output = "<!-- /78776741/SG_Sidebar -->";
+  $output .= "<div id='div-gpt-ad-1472845820011-1' style='height:250px; width:300px; margin:0 auto'>";
+  $output .= "<script>";
+  //$output .= "var mapSidebar = googletag.sizeMapping().addSize([768, 200], [300, 250]).build();";
+  $output .= "googletag.defineSlot('/78776741/SG_Sidebar', [300, 250], 'div-gpt-ad-1472845820011-1')";
+  //$output .= ".defineSizeMapping(mapSidebar)";
+  $output .= ".addService(googletag.pubads());googletag.pubads().setTargeting('page', page);";
+  $output .= "googletag.display('div-gpt-ad-1472845820011-1'); ";
+  $output .= "</script>";
+  $output .= "</div>";
+  return $output;
+
+}
+/**
+ *  Implementation of hook_theme()
+ */
+function supportgroups_utility_theme(){
+  return array(
+    'sg_p_badges' => array(
+      'template' => 'templates/sg_p_badges',
+      'arguments' => array( 'points' => NULL),
+    ),
+  );
+}
+
+/***************************
+ * Theme helper functions
+ ***************************/
+/**
+ * This function is use to create an image style for the user profile images
+ *
+ * @param stdclass $account
+ * @param String $style
+ * @param Bool $link_to_user
+ * @return String
+ */
+function supportgroups_utility_profile_image( $account, $style = '50x50' , $link_to_user = true){
+  $user_picture = '';
+  $default = false;
+  if( !empty( $account->picture) ){
+    if( is_numeric($account->picture) ){
+      $picture = file_load($account->picture);
+    }
+    elseif(is_object($account->picture) ){
+      $picture = $account->picture;
+    }
+
+    if(!empty($picture->uri)){
+      $image_path = $picture->uri;
+      $image_array = explode('pictures/', $image_path);
+      if (isset($image_array[1])) {
+        $filepath = 'public://pictures/'.$image_array[1];
+      }
+      else {
+        $filepath = '';
+      }
+    }
+    elseif( isset($account->picture) ){
+      $image_path = $account->picture;
+      $image_array = explode('pictures/', $image_path);
+      if (isset($image_array[1])) {
+        $filepath = 'public://pictures/'.$image_array[1];
+      }
+      else {
+        $filepath = '';
+      }
+    }
+
+  }
+  elseif( variable_get('user_picture_default', '') ){
+    global $base_url;
+
+    $filepath = variable_get('user_picture_default','');
+    if( $style == '75x75'){
+      $filepath = $base_url . "/sites/all/themes/skeletonsub/images/plus-SG-75.png";
+    }
+    elseif( $style == '50x50'){
+      $filepath = $base_url . "/sites/all/themes/skeletonsub/images/plus-SG-50.png";
+    }
+    elseif( $style == '35x35'){
+      $filepath = $base_url . "/sites/all/themes/skeletonsub/images/plus-SG-35.png";
+    }
+    elseif( $style == '25x25'){
+      $filepath = $base_url . "/sites/all/themes/skeletonsub/images/plus-SG-25.png";
+    }
+    $user_picture = "<img src=\"".$filepath."\"/>";
+
+    $default = true;
+  }
+
+  if (isset($filepath) && !$default) {
+
+    $alt = t("@user's picture", array('@user' => format_username($account)));
+    //if (module_exists('image') && file_valid_uri($filepath)  ) {
+    if (module_exists('image') ) {
+      $user_picture = theme('image_style', array('style_name' => $style, 'path' => $filepath, 'alt' => $alt, 'title' => $alt));
+    }
+
+  }
+
+  if (!empty($account->uid) && user_access('access user profiles') && $link_to_user) {
+      $attributes = array(
+        'attributes' => array('title' => t('View user profile.')),
+        'html' => TRUE,
+        'absolute' => TRUE,
+      );
+      $user_picture = l($user_picture, "user/$account->uid", $attributes);
+  }
+
+  return $user_picture;
+}
+
+/*
+ *  Return a stylized image
+ *  Make sure to add the style in the UI
+ */
+function supportgroups_utility_discussion_image( $image, $style_name = '50x50' , $fid = false ){
+  // Check to see if the image exist
+  if(!empty($image)){
+    // if there is a fid number, then upload the image
+    if($fid){
+      $picture = file_load($image);
+      // path to image
+      $filepath = $picture->uri;
+      $discussion_image  = theme('image_style', array('path' => $filepath, 'style_name' => $style_name));
+    }
+    else{
+      $discussion_image  = theme('image_style', array('path' => $image, 'style_name' => $style_name));
+    }
+  }
+  return $discussion_image;
+}
+
+function  supportgroups_utility_preprocess_user_picture( &$vars){
+
+
+}
+
+/*
+ *
+ *
+ */
+function supportgroups_utility_load_date( $timestamp ){
+  static $now;
+
+  if(empty($now)) {
+    $now = time();
+  }
+
+  // Date. Need to add ago
+  // 1 minute
+  $time_interval = $now - $timestamp;
+  if($time_interval > 0 && $time_interval < 2){
+    return $time_interval." second ago";
+  }
+  elseif( $time_interval < 60 ){
+    return $time_interval." seconds ago";
+  }
+  // 1 hour
+  elseif( $time_interval < 3600 ){
+    $int_date = intval($time_interval/60);
+
+    if( $time_interval < 120){
+      return $int_date." minute ago";
+    }
+    else{
+      return $int_date." minutes ago";
+    }
+  }
+  // a day
+  elseif( $time_interval < 86400 ){
+    $int_date = intval($time_interval/3600);
+
+    if( $time_interval < 7200){
+      return $int_date." hour ago";
+    }
+    else{
+      return $int_date." hours ago";
+    }
+  }
+  // past a year
+  elseif( $time_interval < 31536000  ){
+    return date('M j', $timestamp);
+  }
+  else{
+    return date('M j, Y', $timestamp);
+  }
+}
+
+/*
+ * Preprocess function for textarea
+ * Assign user profile image on every textarea field
+ */
+function supportgroups_utility_preprocess_textarea( &$vars ){
+  global $user;
+  // check to see if image path is cached
+  static $cached_profile_image;
+  if( isset($cached_profile_image) ){
+    $image = $cached_profile_image;
+  }
+  else{
+    // Get the profile image
+    $image = supportgroups_utility_profile_image($user);
+    $imageArray = explode("src=\"", $image);
+    $imageSrc = explode("\"",$imageArray[1]);
+    // parse the image to retrieve the image src
+    $image = $imageSrc[0];
+    $cached_profile_image = $image;
+  }
+  // add the style for the background image to include curren user's profile image
+  $vars['element']['#attributes']['style'][0] = "background:url(".$image.") no-repeat 5px 4px;";
+}
+
+
+/**
+ * This function will return your relationship to the requested user
+ *
+ */
+function get_support_relationship_button( $uid = 0){
+  global $user;
+  $relationship = '';
+  if  ($uid > 0) {
+    $query2 = 'SELECT rid FROM {user_relationships} WHERE approved = 1 AND rtid = 1 AND requestee_id = ' . $uid . ' AND requester_id = ' . $user->uid;
+    $result2 = db_query($query2);
+    $supportflag = 0;
+    $rid = 0;
+    foreach( $result2 AS $issupporter) {
+      $supportflag = 1;
+      $rid = $issupporter->rid;
+     }
+
+    if ($supportflag) {
+      $relationship = '<div class="supporter-button"><a class="button gray" href="/user/' . $user->uid . '/relationships/' . $rid . '/remove?destination=user/' . $uid . '">Unsupport</a></div>';
+    }
+    else {
+      if (_supportgroups_user_request_relationship_allowed()) {
+        $relationship = '<div class="supporter-button"><a class="button green" href="/relationship/' . $uid . '/request/1?destination=user/' . $uid . '">Support</a></div>';
+      }
+    }
+  }
+  return $relationship;
+}
+
+/**
+ *  Return uid by username
+ */
+function supportgroups_utility_get_uid_by_name( $name ){
+  $uid = '';
+  $result = db_query("SELECT uid FROM {users}
+    WHERE name = :name LIMIT 1", array( ':name' => $name ) );
+  foreach( $result as $row ){
+    return $row->uid;
+  }
+  return $uid;
+}
+
+
+/**
+ *  Return uid by username
+ */
+function supportgroups_utility_get_name_by_uid( $uid ){
+  $name = '';
+  if ( $uid > 0 ){
+    $result = db_query("SELECT name FROM {users}
+      WHERE uid = :uid LIMIT 1", array( ':uid' => $uid ) );
+    foreach( $result as $row ){
+      return $row->name;
+    }
+  }
+  return $name;
+}
+
+/**
+ *  This function will return the badges
+ *  param int $points
+ */
+function supportgroups_utility_get_badges( $points ){
+  return theme('sg_p_badges', array( 'points' => $points ) );
+}
+
+/**
+ * Preprocess function for user badges
+ *
+ */
+function supportgroups_utility_preprocess_sg_p_badges( &$vars){
+  $vars['badges'] = '';
+ if( $vars['points'] >= 25){
+    $vars['badges'] .= '<a href="/support-points" class="green-badge">&bull;</a>';
+  }
+  if( $vars['points'] >= 200){
+    $vars['badges'] .= '<a href="/support-points" class="yellow-badge">&bull;</a>';
+  }
+  if( $vars['points'] >= 1000 ){
+    $vars['badges'] .= '<a href="/support-points" class="blue-badge">&bull;</a>';
+  }
+  if( $vars['points'] >= 5000){
+    $vars['badges'] .= '<a href="/support-points" class="orange-badge">&bull;</a>';
+  }
+  if( $vars['points'] >= 20000){
+    $vars['badges'] .= '<a href="/support-points" class="black-badge">&bull;</a>';
+  }
+}
+
+/**
+ *  This is a helper function that returns the current users group count
+ *
+ */
+function supportgroups_utility_group_count( $uid = 0){
+  $group_count = '';
+  if( $uid > 0 ){
+    // get the group count for a uesr
+    $result = db_query("SELECT count(gid) as gid FROM {og_membership}
+      WHERE entity_type = 'user' AND etid = :uid", array( ':uid' => $uid) );
+    foreach( $result as $row ){
+      $group_count = $row->gid;
+      break;
+    }
+  }
+  return $group_count;
+}

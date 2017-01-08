@@ -1,0 +1,108 @@
+/* supportfeed module */
+
+/* header activity notifications */
+#block-supportgroups-feed-supportgroups-feed-notifications {
+	position:absolute;
+	top:8px;
+	left:350px; }
+	#activity-notifications:hover, #notifications-pm:hover {
+		cursor:pointer; }
+	#activity-notifications-icon {
+		background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-activity.png) no-repeat top left;
+		width:35px;
+		height:33px; }
+		#activity-notifications-count {
+			background: red;
+			border-radius: 0.8em;
+			-moz-border-radius: 0.8em;
+			-webkit-border-radius: 0.8em;
+			text-align: center;
+			color: #ffffff;
+			display: inline-block;
+			line-height: 1.6em;
+			margin-right: 5px;
+			width: 1.6em; }
+
+/* dropdown list */
+div#activity-item-list{
+	display:none;
+	font-size:0.9em; }
+#activity-item-list {
+	width:280px;
+	max-height:400px;
+	overflow-y:auto;
+	margin-left:18px;
+	background:white; 
+	border-top: 2px solid #dddddd;
+	border-right: 4px solid #dddddd;
+	border-bottom:4px solid #dddddd;
+	border-left: 2px solid #dddddd;
+	border-radius:7px; }
+	#navigation #activity-item-list ul {
+		list-style:none;
+		padding:0.5em;
+		width: 95%;}
+		#navigation #activity-item-list ul li {
+			clear:left;
+			padding:0.6em 0;
+			border-bottom:1px solid #cccccc;
+			width:100%;	
+			min-height:50px;
+      display: block;
+			height:auto !important;
+			height:50px; }
+      #navigation #activity-item-list ul li#more-notifications {
+        text-align: center;
+        line-height: 50px;
+      }
+			#navigation #activity-item-list li:hover {background:#f0f0e8; }
+		#navigation #activity-item-list ul a {
+			color:#333333;
+			font-weight:normal;
+			padding:0; }
+		#navigation #activity-notifications img {
+			float:left;
+			margin-right:5px;
+			width:50px;
+			height:50px; }
+		#activity-notifications .member {
+			font-weight:bold; }
+		#activity-notifications .heart {
+			color:red; }
+		#navigation #activity-notifications .time {
+			float:right; }
+		#activity-notifications .teaser {
+			padding-top:0.2em;
+			font-style:italic; }
+    #no-notifications {
+      color: #fff;
+      display: none;
+    }
+
+#activity-item-list .see-all {
+	text-align:center;
+	font-weight:bold;
+	background:white;
+	border-right: 3px solid #dddddd;
+	border-left: 1px solid #dddddd;
+	border-bottom:3px solid #dddddd;
+	border-bottom-left-radius:7px;
+	border-bottom-right-radius:7px;
+	padding:0.2em 0; }
+	.see-all a {color:#239A20; }
+	
+#activity-item-list.loading {
+  background: #ffffff url(/sites/all/modules/custom/supportgroups_feed/images/ajax-loader-activity.gif) no-repeat center 5px;
+  padding-top: 20px;
+}
+
+/* slide icon to left for smaller screen */
+@media only screen and (max-width: 767px) {
+	#block-supportgroups-feed-supportgroups-feed-notifications {
+		left:130px; }
+
+	/* move notification lists to left for small screen */
+	#activity-item-list {
+		margin-left:-100px; }
+
+}

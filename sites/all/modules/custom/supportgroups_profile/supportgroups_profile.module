@@ -1,0 +1,821 @@
+<?php
+define('SUPPORTGROUPS_PROFILE_CACHE_TABLE' , 'cache');
+define('SUPPORTGROUPS_PROFILE_CACHE_CID' , 'supportgroups_profile_info_');
+define('SUPPORTGROUPS_PROFILE_CACHE_TTL' , '+7 days');
+define('SUPPORTGROUPS_PROFILE_MODULE_PATH', drupal_get_path('module', 'supportgroups_profile') );
+
+// set user preferences to expire after a year
+define('SUPPORTGROUPS_PROFILE_USER_PREFERENCES_COOKIE_EXPIRES', time() + 31536000 );
+
+/*
+ * This function will set the weight of the module higher. We want this module to be called last so it can use other contrib modules (Notifications)
+ //TODO Do we need this enable function
+ */
+function supportgroups_profile_enable() {
+  db_query("UPDATE {system} SET weight = 3 WHERE name = 'supportgroups_profile'");
+}
+
+/**
+ * Implementation of hook theme
+ *
+ */
+function supportgroups_profile_theme(){
+  return array(
+    'profileSettings' => array( '
+      arguments' => array( 'profileSettings' => NULL, 'mailChimp' => NULL),
+      'template' => 'templates/profileSettings'
+    ),
+    'profile_info' => array(
+      'arguments' => array( 'supporters' => NULL, 'supporting' => NULL,  'name' => NULL, 'uid' => NULL, 'user_picture' => NULL ),
+      'template' => 'templates/profile_info'
+    )
+  );
+}
+
+/**
+ * Implementation of hook form alter
+ *
+ */
+function supportgroups_profile_form_alter(&$form, &$form_state, $form_id) {
+  global $user;
+  
+  switch($form_id) {
+    case 'user_profile_form':
+      // this is to ensure that we are clearing the user prefs cookie
+      // hook_user_update was not working
+      $form['#submit'][] = '_supportgroups_profile_user_profile_form_submit';
+      break;
+      
+    case 'supportgroups_profile_form':
+      $form['#validate'][] = 'profile_user_form_validate';
+      $account = $form['#user'];
+      // This is from the profile module.  I copied everything from there.
+      $result = _profile_get_fields('About Me', $form['#user_category'] == 'register');
+      $weight = 1;
+      foreach ($result as $field) {
+        $category = $field->category;
+        if (!isset($form[$category])) {
+          $form[$category] = array('#type' => 'fieldset', '#title' => check_plain($category), '#weight' => $weight++);
+        }
+        switch ($field->type) {
+          case 'textfield':
+          case 'url':
+            $form[$category][$field->name] = array(
+              '#type' => 'textfield',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#maxlength' => 255,
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+            );
+            if ($field->autocomplete) {
+              $form[$category][$field->name]['#autocomplete_path'] = "profile/autocomplete/" . $field->fid;
+            }
+            break;
+
+          case 'textarea':
+            $form[$category][$field->name] = array(
+              '#type' => 'textarea',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+            );
+            break;
+
+          case 'list':
+            $form[$category][$field->name] = array(
+              '#type' => 'textarea',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+            );
+            break;
+
+          case 'checkbox':
+            $form[$category][$field->name] = array(
+              '#type' => 'checkbox',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+            );
+            break;
+
+          case 'selection':
+            $options = array();
+            $lines = preg_split("/[\n\r]/", $field->options);
+            foreach ($lines as $line) {
+              if ($line = trim($line)) {
+                $options[$line] = $line;
+              }
+            }
+            $form[$category][$field->name] = array(
+              '#type' => 'select',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#options' => $options,
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+              '#empty_value' => 0,
+            );
+            break;
+
+          case 'date':
+            $form[$category][$field->name] = array(
+              '#type' => 'date',
+              '#title' => check_plain($field->title),
+              '#default_value' => isset($account->{$field->name}) ? $account->{$field->name} : '',
+              '#description' => _profile_form_explanation($field),
+              '#required' => $field->required,
+            );
+            break;
+        }
+      }// foreach loop for the profile fields
+      // Hide email settings
+      $form['field_send_interval']['#access'] = FALSE;
+      $form['field_email_notifications']['#access'] = FALSE;
+
+
+
+      // Add comment notify options COPIED FROM THE comment notify module
+      if (!empty($account->comment_notify_settings)) {
+        $node_notify = $account->comment_notify_settings->node_notify;
+        $comment_notify = $account->comment_notify_settings->comment_notify;
+        $notify_interval = $account->comment_notify_settings->notify_interval;
+      }
+
+      $form['comment_notify_settings'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Notification Settings'),
+        '#weight' => 4,
+        '#collapsible' => TRUE
+      );
+
+      // Only show the node followup UI if the user has permission to create nodes.
+      $nodes = FALSE;
+      foreach (node_type_get_names() as $type => $name) {
+        if (node_access('create', $type)) {
+          $nodes = TRUE;
+          break;
+        }
+      }
+
+      if (user_access('administer nodes') || $nodes) {
+        $form['comment_notify_settings']['node_notify'] = array(
+          '#type' => 'checkbox',
+          '#title' => t('Receive follow-up notification e-mails'),
+          '#default_value' => isset($node_notify) ? $node_notify : comment_notify_variable_registry_get('node_notify_default_mailalert'),
+          '#description' => t('Check this box to receive notifications when Members comment on your posts.')
+        );
+      }
+      else {
+        $form['comment_notify_settings']['node_notify'] = array(
+          '#type' => 'hidden',
+          '#value' => COMMENT_NOTIFY_DISABLED,
+        );
+      }
+
+      $available_options[COMMENT_NOTIFY_DISABLED] = t('No notifications');
+      $available_options += _comment_notify_options();
+      $form['comment_notify_settings']['comment_notify'] = array(
+        '#type' => 'select',
+        '#title' => t('Receive comment notification e-mails'),
+        '#default_value' => isset($comment_notify) ? array($comment_notify) : array(comment_notify_variable_registry_get('default_registered_mailalert')),
+        '#options' => $available_options,
+        '#description' => t("When posts that you have commented on are updated you can choose to receive notifications. You can choose to be notified about all comments or only replies to your comments.")
+      );
+      $form['comment_notify_settings']['notify_interval'] = array(
+        '#type' => 'select',
+        '#title' => t('Notification Interval'),
+        '#default_value' => isset($notify_interval) ? array($notify_interval) : 0,
+        '#options' => array('24 hours','12 hours','8 hours','4 hours'),
+        '#description' => t("Select prefered Notification Interval")
+      );
+      break;
+  }
+} // end of form alter
+
+/*
+ * Implementation of hook_menu
+ This function will create the url user/[uid]/profile-setting.
+ This page will display the email notifications and mailchimp settings.
+ This is needed to simplify the profile page.
+ */
+function supportgroups_profile_menu(){
+  // New profile edit page
+  $items['user/%user/profile-settings'] = array(
+    'title' => 'Email Settings',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'supportgroups_profile_email_menu',
+    'page arguments' => array(1),
+    'access callback' => 'supportgroups_profile_access',
+    'access arguments' => array(1),
+    'weight' => 10,
+    'tab_parent' => 'user/%/edit',
+    'description' => t('This page will show the profile options')
+  );
+  // Public profile page
+  $items['user/%user/publicprofile'] = array(
+    'title' => 'Public Profile',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'supportgroups_profile_public_profile',
+    'page arguments' => array(1),
+    'access callback' => 'supportgroups_profile_access',
+    'access arguments' => array(1),
+    'weight' => 10,
+    'description' => t('This page will show the public profile')
+  );
+  return $items;
+}
+
+/*
+ *  This is the fix that allows profile information to be saved.
+ */
+function supportgroups_profile_user_insert(&$edit, $account, $category) {
+  if( ( strpos($_SERVER['REQUEST_URI'], 'profile-setting') !== false ) ){
+    $register = false;
+    $result = _profile_get_fields('About Me', $register);
+    foreach ( $result as $field) {
+      if (_profile_field_serialize($field->type)) {
+        $edit[$field->name] = serialize($edit[$field->name]);
+      }
+      db_query("DELETE FROM {profile_value} WHERE fid = :fid AND uid = :uid", array( ':fid' => $field->fid, ':uid' =>$account->uid));
+      db_query("INSERT INTO {profile_value} (fid, uid, value) VALUES (:fid, :uid, ':value')", array( ':fid' => $field->fid, ':uid' => $account->uid, ':value' => $edit[$field->name]));
+      // Mark field as handled (prevents saving to user->data).
+      $edit[$field->name] = NULL;
+    }
+  }
+}
+
+/**
+ * Implementation of user_update
+ *  Update profile fields when a user saves their profile page
+ */
+function supportgroups_profile_user_update(&$edit, $account, $category) {
+  if( ( strpos($_SERVER['REQUEST_URI'], 'profile-setting') !== false ) ){
+    $register = false;
+    $result = _profile_get_fields('About Me', $register);
+    foreach ($result as $field) {
+      if (_profile_field_serialize($field->type)) {
+        $edit[$field->name] = serialize($edit[$field->name]);
+      }
+      db_query("DELETE FROM {profile_value} WHERE fid = :fid AND uid = :uid", array( ':fid' => $field->fid, ':uid' =>$account->uid));
+      db_query("INSERT INTO {profile_value} (fid, uid, value) VALUES (:fid, :uid, :value)", array( ':fid' => $field->fid, ':uid' => $account->uid, ':value' => $edit[$field->name]));
+      // Mark field as handled (prevents saving to user->data).
+      $edit[$field->name] = NULL;
+    }
+  }
+}
+
+/*
+ * Implementation of hook access
+ * This function will check to see if the user can access this page. The user can only edit their own profile. Admin users can see all pages.
+ */
+function supportgroups_profile_access($account){
+  return (($GLOBALS['user']->uid == $account->uid) || user_access('administer users')) && $account->uid > 0;
+}
+
+
+
+/*
+This function will return a template.  This function is called when a user goes to their email-settings page, user/[uid]/email-settings.
+@emailSettings - contains the settings from the notification module
+@mailChimp - contains the settings from the mailchimp module
+*/
+function supportgroups_profile_email_menu( $account, $category = 'account'){
+  // add js and css file
+  drupal_add_js(SUPPORTGROUPS_PROFILE_MODULE_PATH.'/js/supportgroups_profile_edit.js');
+  drupal_add_css(SUPPORTGROUPS_PROFILE_MODULE_PATH.'/css/supportgroups_profile_edit.css');
+  // retrieve mailchimp list
+  $lists = mailchimp_lists_get_available_lists($account, MAILCHIMP_LISTTYPE_OPTIONAL, array('show_account_form' => 1));
+  // get mailchimp form
+  $mailChimp = drupal_get_form('mailchimp_lists_user_subscribe_form', $lists, $account);
+  // get edit profile form
+  $profileSettings = drupal_get_form('supportgroups_profile_form', $account, $category);
+  return theme('profileSettings', array('profileSettings' =>$profileSettings, 'mailChimp' => $mailChimp));
+}
+
+/**
+ * This funciton will set the context when viewing a public profile
+ *
+ */
+function supportgroups_profile_public_profile( $account, $category = 'account'){
+  context_set('context', 'profile_other', context_load('profile_other'));
+  return "<div></div>";
+}
+
+/******************* Subscription *********************/
+
+/*
+ *This function will return a form contain the notification settings information
+ */
+function supportgroups_profile_form( $form, &$form_state, $account, $category = 'account'){
+  global $user;
+  if (!isset($form_state['user'])) {
+    $form_state['user'] = $account;
+  }
+  else {
+    $account = $form_state['user'];
+  }
+  $form['#user'] = $account;
+  $form['#user_category'] = $category;
+  $langcode = entity_language('user', $account);
+  field_attach_form('user', $account, $form, $form_state, $langcode);
+  $register = ($form['#user']->uid > 0 ? FALSE : TRUE);
+  $admin = user_access('administer users');
+  $form['#validate'][] = 'user_account_form_validate';
+  // Username field
+  $form['account']['name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('<div class="name-header">Name and Password</div><span>Username</span>'),
+    '#maxlength' => USERNAME_MAX_LENGTH,
+    '#description' => t('Spaces are not allowed; punctuation is not allowed except for periods, hyphens, apostrophes, and underscores.'),
+    '#required' => TRUE,
+    '#attributes' => array('class' => array('username')),
+    '#default_value' => (!$register ? $account->name : ''),
+    '#access' => ($register || ($user->uid == $account->uid && user_access('change own username')) || $admin),
+    '#weight' => 49,
+  );
+  // Email field
+  $form['account']['mail'] = array(
+    '#type' => 'textfield',
+    '#title' => t('E-mail address'),
+    '#maxlength' => EMAIL_MAX_LENGTH,
+    '#description' => t('E-mails from SupportGroups will be sent to this address. The e-mail address is not made public.'),
+    '#required' => TRUE,
+    '#default_value' => (!$register ? $account->mail : ''),
+    '#weight' => 50,
+  );
+  // Display password field only for existing users or when user is allowed to
+  // assign a password during registration.
+  if (!$register) {
+      $form['account']['current_pass_required_values'] = array(
+        '#type' => 'value',
+        '#weight' => 50
+      );
+      $form['account']['current_pass'] = array(
+        '#type' => 'password',
+        '#title' => t('Current password'),
+        '#size' => 25,
+        '#access' => !empty($protected_values),
+        //'#description' => $current_pass_description,
+        '#weight' => 51,
+        '#attributes' => array('autocomplete' => 'off'),
+      );
+
+    $form['account']['pass'] = array(
+      '#type' => 'password_confirm',
+      '#size' => 25,
+      '#weight' => 51,
+      '#description' => t('To change the current user password, enter the new password in both fields.'),
+    );
+    // To skip the current password field, the user must have logged in via a
+    // one-time link and have the token in the URL.
+    $pass_reset = isset($_SESSION['pass_reset_' . $account->uid]) && isset($_GET['pass-reset-token']) && ($_GET['pass-reset-token'] == $_SESSION['pass_reset_' . $account->uid]);
+    $protected_values = array();
+    $current_pass_description = '';
+    // The user may only change their own password without their current
+    // password if they logged in via a one-time login link.
+    if (!$pass_reset) {
+      $protected_values['mail'] = $form['account']['mail']['#title'];
+      $protected_values['pass'] = t('Password');
+      $request_new = l(t('Request new password'), 'user/password', array('attributes' => array('title' => t('Request new password via e-mail.'))));
+      $current_pass_description = t('Enter your current password to change the %mail or %pass. !request_new.', array('%mail' => $protected_values['mail'], '%pass' => $protected_values['pass'], '!request_new' => $request_new));
+    }
+    // The user must enter their current password to change to a new one.
+    if ($user->uid == $account->uid) {
+      $form['account']['current_pass_required_values'] = array(
+        '#type' => 'value',
+        '#value' => $protected_values,
+      );
+      $form['account']['current_pass'] = array(
+        '#type' => 'password',
+        '#title' => t('Current password'),
+        '#size' => 25,
+        '#access' => !empty($protected_values),
+        '#description' => $current_pass_description,
+        '#weight' => 51,
+        '#attributes' => array('autocomplete' => 'off'),
+      );
+      $form['#validate'][] = 'user_validate_current_pass';
+    }
+  }
+  elseif (!variable_get('user_email_verification', TRUE) || $admin) {
+    $form['account']['pass'] = array(
+      '#type' => 'password_confirm',
+      '#size' => 25,
+      '#description' => t('Provide a password for the new account in both fields.'),
+      '#required' => TRUE,
+    );
+  }
+
+  // Picture/avatar.
+  $form['picture'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Picture'),
+    '#weight' => -30,
+    '#access' => (!$register && variable_get('user_pictures', 0)),
+  );
+  $form['picture']['picture'] = array(
+    '#type' => 'value',
+    '#value' => isset($account->picture) ? $account->picture : NULL,
+  );
+  $form['picture']['picture_current'] = array(
+    '#markup' => theme('user_picture', array('account' => $account)),
+  );
+  $form['picture']['picture_delete'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Delete picture'),
+    '#access' => !empty($account->picture->fid),
+    '#description' => t('Check this box to delete your current picture.'),
+  );
+  // Adding a link to remove the picture and reload the page
+  $form['picture']['picture_delete_link'] = array(
+    '#access' => !empty($account->picture->fid),
+    '#markup' => "<div class='removepicture'><span id='removepicture' class='graybutton'>Remove Picture</span></div>",
+  );
+
+  $form['picture']['picture_upload'] = array(
+    '#type' => 'file',
+    '#title' => t('Select an image from your computer (4MB max):'),
+    '#size' => 48,
+    '#description' => t(variable_get('user_picture_guidelines')),
+  );
+  $form['#validate'][] = 'user_validate_picture';
+    /* I copied from user registration */
+  // Relationship options
+  $access = variable_get('user_relationship_mailer_send_mail', FALSE) && user_relationships_user_access('maintain @relationship relationships', NULL, $account);
+  $form['user_relationships_ui_settings']['user_relationship_mailer_send_mail'] = array(
+    '#type'           => 'checkbox',
+    '#title'          => t('Receive email when I get a new Supporter'),
+    '#default_value'  => isset($form['#user']->data['user_relationship_mailer_send_mail']) ? $form['#user']->data['user_relationship_mailer_send_mail'] : TRUE,
+    '#weight'         => -10,
+    '#access' => $access,
+  );
+  // Private message options
+  $form['privatemsg']['pm_send_notifications'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Receive email when I get a Private Message'),
+    '#default_value' => _pm_email_notify_is_enabled($form['#user']->uid),
+    '#states' => array(
+      'visible' => array(
+        ':input[name="pm_enable"]' => array('checked' => TRUE),
+      ),
+    ),
+  );
+	// Cancel email subscriptions
+	//  $form['cancel_subscriptions'] = array(
+	//   '#markup' =>  '<a href="/notifications/unsubscribe/user/'.$account->uid.'">Unsubscribe from all messages</a>',
+	//    '#weight' => 6
+	//  );
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save Profile Settings'),
+  );
+  $form['#validate'][] = 'supportgroups_profile_user_profile_form_validate';
+  $form['#submit'][] = 'supportgroups_profile_user_profile_form_submit';
+  return $form;
+}// end of profile form function
+
+/**
+ * Took this from the default user edit validate function
+ *
+ */
+function supportgroups_profile_user_profile_form_validate($form, &$form_state) {
+  entity_form_field_validate('user', $form, $form_state);
+}
+
+/**
+ *  Copy from the user edit submit function
+ *
+ */
+function supportgroups_profile_user_profile_form_submit($form, &$form_state) {
+  $account = $form_state['user'];
+  $category = $form['#user_category'];
+  form_state_values_clean($form_state);
+  $account_unchanged = clone $account;
+  entity_form_submit_build_entity('user', $account, $form, $form_state);
+  $edit = array_intersect_key((array) $account, $form_state['values']);
+  user_save($account_unchanged, $edit, $category);
+  $form_state['values']['uid'] = $account->uid;
+  if ($category == 'account' && !empty($edit['pass'])) {
+    unset($_SESSION['pass_reset_'. $account->uid]);
+  }
+  // Check to see if the user has decided to turn off all notifications
+  if ($form_state['values']['comment_notify'] == 0) {
+    // Unsubscribe from all comments if the value is 0 (No Notifications)
+    if(module_exists('comment_notify')){
+      module_load_include('inc', 'comment_notify', 'comment_notify');
+      // Unsubscribe notifications from all comments
+      comment_notify_unsubscribe_by_email($account->mail);
+    }
+  }
+  // clear the profile info block cache
+  $cid = _supportgroups_profile_info_cid( $account->uid);
+  cache_clear_all( $cid,SUPPORTGROUPS_PROFILE_CACHE_TABLE );
+  drupal_set_message(t('The changes have been saved.'));
+}
+
+/**
+ * Helper function for user profile form submit
+ **/
+function _supportgroups_profile_user_profile_form_submit($form, &$form_state) {
+  // reset the user preference cookie
+  _supportgroups_profile_set_user_preferences_cookie();
+}
+
+/*******************  End of Subscription *********************/
+
+
+/******************* Mailchimp *********************/
+
+/*
+ This function will return the mailchimp settings. I just copied the mailchimp module.
+ */
+function supportgroups_profile_mailchimp_form( $form_state, $account, $standalone = TRUE, $list = NULL){
+  $form = array();
+  if ($q = _mailchimp_get_api_object()) {
+    if ($account->uid) {
+      $form['uid'] = array(
+        '#type' => 'hidden',
+        '#value' => $account->uid
+      );
+    }
+    else {
+      // user registration or admin creating new user
+      $account->roles = array(2 => 'authenticated');
+    }
+    $lists = array();
+    if (empty($list)) {
+      $lists = _mailchimp_get_available_lists($account);
+    } else {
+      $lists[$list->id] = $list;
+    }
+    foreach ($lists as $list) {
+      mailchimp_auth_newsletter_form($form, $list, $account, $q);
+    }
+    $form['lists'] = array(
+      '#type'   => 'value',
+      '#value'  => $lists
+    );
+    if ($standalone){
+      $form['submit'] = array(
+        '#type' => 'submit',
+        '#value' => t('Save Newsletter Settings'),
+        '#weight' => 100
+      );
+
+      $form['#submit'][] = 'mailchimp_subscribe_auth_form_submit';
+    }
+  }
+  return $form;
+}
+
+/**
+ * Implementation of block_info
+ */
+function supportgroups_profile_block_info(){
+  $blocks = array();
+  $blocks['profileinfo'] = array(
+    'info' => t('Profile Info'),
+    'cache' => DRUPAL_CACHE_PER_USER,
+  );
+  return $blocks;
+}
+
+/**
+ *  Implementation of block_view
+ */
+function supportgroups_profile_block_view( $delta = ''){
+  global $user;
+  $blocks = array();
+  switch ($delta) {
+    case 'profileinfo':
+	  $blocks['subject'] = t('');
+   	  $blocks['content'] = $user->uid ? supportgroups_profile_info_content($user->uid) : "";
+   	  break;
+    }
+  return $blocks;
+}
+
+/**
+ *  Implementation of the preprocess function for profile_info
+ *
+ */
+function supportgroups_profile_preprocess_profile_info( &$vars ){
+  // Create supporters link
+  $vars['supporters_link'] =  l('Has ' . $vars['supporters'] . ' ' . format_plural($vars['supporters'], 'Supporter', 'Supporters'), 'user/'. $vars['uid'] .'/supporters', array('absolute' => true, 'html' => true));
+
+
+  // Create link to supporting
+  $vars['supporting_link'] =  l(t('Supports') . ' ' . $vars['supporting'], 'user/'. $vars['uid'] .'/supporting', array('absolute' => true, 'html' => true));
+
+  // Create link to profile
+  $vars['profile_link'] =  l(t('Edit Profile'), 'user/'. $vars['uid'] .'/profile-settings', array('absolute' => true, 'query' => array('profile' => 'email')));
+
+
+  // Create link to user feed
+  $vars['feed_link'] =  l(t('My Support Feed'), drupal_get_path_alias('user/'. $vars['uid']), array('absolute' => true));
+
+  // Create username with link
+  $vars['username'] =  l($vars['name'], drupal_get_path_alias('user/'. $vars['uid']), array('absolute' => true));
+}
+
+/**
+ * Wrapper function to get cached user profile
+ * @param Boolean $reset
+ **/
+function supportgroups_profile_info_content($uid, $reset = FALSE) {
+  static $profile = array();
+  if (isset($profile[$uid])) {
+    return $profile[$uid];
+  }
+
+	// helper finction from module file to get cid
+  $cid = _supportgroups_profile_info_cid($uid);
+
+  if ($reset) {
+    // render the profile
+    $profile[$uid] = _supportgroups_profile_info_content();
+
+    cache_set($cid, $profile[$uid], SUPPORTGROUPS_PROFILE_CACHE_TABLE, strtotime(SUPPORTGROUPS_PROFILE_CACHE_TTL));
+
+    return $profile[$uid];
+  }
+
+  // attempt to retrieve from cache
+  $cache = cache_get($cid, SUPPORTGROUPS_PROFILE_CACHE_TABLE);
+
+  if ($cache) {
+    $profile[$uid] = $cache->data;
+    return $profile[$uid];
+  }
+  elseif(!$reset) {
+    return supportgroups_profile_info_content($uid, TRUE);
+  }
+
+  return FALSE;
+}
+
+/**
+ * Helper function to return the markup for the profile info block
+ */
+function _supportgroups_profile_info_content(){
+  global $user; $user_picture = ''; $supportingcountresult = 0; $supportercountresult = 0;
+
+  // I'm not sure what's the best way to cache the supporting and supporters count
+  // It looks like I would have to create two different cids
+  // For now, I'm just going to cache everything
+  //TODO separate the data from the theme when setting the cache
+  if( module_exists('supportgroups_utility') ){
+    $user_picture = supportgroups_utility_profile_image( $user, '75x75');
+  }
+
+	$supportingcountresult = db_query('SELECT COUNT(requestee_id) as thecount FROM {user_relationships} WHERE approved = 1 AND rtid = 1 AND requester_id = ' . $user->uid);
+  foreach( $supportingcountresult AS $temp){
+    $supportingcount = $temp->thecount;
+    break;
+  }
+
+	$supportercountresult = db_query('SELECT COUNT(requester_id) as thecount FROM {user_relationships} WHERE approved = 1 AND rtid = 1 AND requestee_id = ' . $user->uid);
+  foreach( $supportercountresult AS $temp2){
+    $supportercount = $temp2->thecount;
+    break;
+  }
+
+  $user_picture = str_replace('http://', SG_HTTP_PROTOCOL, $user_picture);
+
+	$content = theme('profile_info', array( 'supporters' => $supportercount, 'supporting' => $supportingcount, 'uid' => $user->uid, 'name' => $user->name, 'user_picture' => $user_picture  ) );
+
+  return $content;
+}
+
+/**
+ * Implementation of hook_user_relationships_insert
+ * Invalidate cache for the user's profile info
+ */
+function supportgroups_profile_user_relationships_insert($relationship) {
+  _supportgroups_profile_clear_profile_info($relationship);
+}
+
+/**
+ * Implementation of hook_user_relationships_delete
+ * Invalidate cache for the user's profile info
+ */
+function supportgroups_profile_user_relationships_delete($relationship, $action) {
+  _supportgroups_profile_clear_profile_info($relationship);
+}
+
+/**
+ * Helper function to manage cleaning up caches when user relationships are added/removed
+ *
+ * @param stdClass $relationship
+ */
+function _supportgroups_profile_clear_profile_info($relationship) {
+  // clear individual user info caches
+  cache_clear_all(_supportgroups_profile_info_cid($relationship->requester_id), SUPPORTGROUPS_PROFILE_CACHE_TABLE);
+  cache_clear_all(_supportgroups_profile_info_cid($relationship->requestee_id), SUPPORTGROUPS_PROFILE_CACHE_TABLE);
+}
+
+/**
+ *  Helper function that returns cid
+ *
+ * @param int $uid
+ */
+function _supportgroups_profile_info_cid( $uid ){
+  return SUPPORTGROUPS_PROFILE_CACHE_CID.$uid;
+}
+
+/******************* End of Mailchimp *********************/
+/**
+ * Implementation of hook_preprocess_user_profile
+ * @param array $variables
+ */
+function supportgroups_profile_preprocess_user_profile(&$variables) {
+  // dpm($variables, "USER PROFILE");
+}
+
+/**
+ *  User profile field functions
+ *  Copied from the user profile module
+ *
+ */
+function _supportgroups_profile_get_fields($category, $register = FALSE) {
+  $query = db_select('profile_field');
+  if ($register) {
+    $query->condition('register', 1);
+  }
+  else {
+    $query->condition('category', db_like($category), 'LIKE');
+  }
+  if (!user_access('administer users')) {
+    $query->condition('visibility', PROFILE_HIDDEN, '<>');
+  }
+  return $query
+    ->fields('profile_field')
+    ->orderBy('category', 'ASC')
+    ->orderBy('weight', 'ASC')
+    ->execute();
+}
+
+/**
+ * Helper function to load the user preferences cookie
+ */
+function _supportgroups_profile_get_user_preferences() {
+  if(!isset($_COOKIE['supportgroups_user_preferences'])) {
+    return _supportgroups_profile_set_user_preferences_cookie();
+  } else {
+    return $_COOKIE['supportgroups_user_preferences'];
+  }
+
+  return false;
+}
+
+/**
+ * Helper function to set the user preferences cookie
+ * @param object $account
+ */
+function _supportgroups_profile_set_user_preferences_cookie($account = false) {
+  // set the acting user
+  global $user;
+  if(!$account) {
+    // load the full user object including custom profile fields
+    $account = user_load($user->uid);
+  }
+
+  if(is_object($account) && ($account->uid == $user->uid)) {
+    // load the preferences
+    $preferences = _supportgroups_profile_load_user_preferences($account);
+
+    // if we have preferences then set a cookie
+    if($preferences) {
+      setcookie('supportgroups_user_preferences', json_encode($preferences), SUPPORTGROUPS_PROFILE_USER_PREFERENCES_COOKIE_EXPIRES);
+
+      return $preferences;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Helper function to build the user preferences array
+ * @param object $account
+ */
+function _supportgroups_profile_load_user_preferences($account) {
+  if(is_object($account)) {
+    $preferences = array();
+
+    // hide logo on scroll
+    if(isset($account->profile_hide_logo)) {
+      $preferences['hide_logo_on_scroll'] = $account->profile_hide_logo;
+    }
+
+    return $preferences;
+  }
+
+  return false;
+}

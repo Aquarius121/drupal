@@ -1,0 +1,5 @@
+name = Custom View Arguments
+package = "Custom Code"
+description = Send arguments to blocks.  Used primary for our topic pages that have panels
+core = 7.x
+project = "Custom Code"

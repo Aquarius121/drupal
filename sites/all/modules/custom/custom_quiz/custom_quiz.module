@@ -1,0 +1,99 @@
+<?php
+
+/*
+* Hook theme
+*/
+function custom_quiz_theme(){
+  return array(
+    'custom_view' => array('arguments' => array('check' => NULL), 'template' => 'custom_view'),
+    'custom_results' => array('arguments' => array('catOne' => NULL,
+						   'catTwo' => NULL,
+						   'catThree' => NULL,
+						   'catFour' => NULL,
+						   'catFive' => NULL), 'template' => 'custom_results'),
+    'custom_quiz' => array('arguments' => array(), 'template' => 'custom_quiz')
+
+  );
+}
+
+function custom_quiz_block_info(){
+  $blocks = array();
+  $blocks['customquiz'] = array(
+    'info' => t('Custom Personality Quiz - Module'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+function custom_quiz_block_view( $delta = ''){
+  $block = array();
+  switch( $delta ){
+    case 'customquiz':
+    $block['content'] = _get_results();
+    break;
+  }
+  return $block;
+}
+
+function _get_results(){
+  global $base_url;
+  
+  include('config.php');
+  if(isset($_POST['choice'])){
+    $_SESSION['answers'][$_GET['question']-1] = $_POST['choice'];
+    if($_GET['question'] > QUESTION_MAX){
+      header("location: ?question=results");
+      exit();
+    }
+  }
+  if(isset($_POST['startover'])){
+    unset($_SESSION['answers']);
+    $tempArray = array();
+       for($i = 0; $i < QUESTION_MAX+1 ; $i++){
+         $tempArray[$i] = NULL;
+       }
+       $_SESSION['answers'] = $tempArray;
+  }
+  if($_GET['question'] == 'results'){
+    if( !isset($_SESSION['answers'])){
+      // First Page
+      header("Location: " . $base_url . "/self-tests/personality-test");
+      exit();
+    }
+      return theme('custom_results');
+  }
+  elseif(isset($_GET['question'])){
+
+    if( !isset($_SESSION['answers'])){
+      // First Page
+      header("Location: " . $base_url . "/self-tests/personality-test");
+      exit();
+    }
+      return theme('custom_quiz');
+  }// Second Page - Do not include the base url
+  elseif( $_SERVER['REQUEST_URI'] == '/self-tests/personality-test/start'){
+
+    if( !isset($_SESSION['answers'])){
+      //  First Page
+      header("Location: " . $base_url . "/self-test/personality-test");
+      exit();
+    }
+      return theme('custom_quiz');      
+  }
+  else{
+    if(!isset($_SESSION['answers'])){
+       $tempArray = array();
+       for($i = 0; $i < QUESTION_MAX+1 ; $i++){
+         $tempArray[$i] = NULL;
+       }
+       $_SESSION['answers'] = $tempArray;
+      return theme('custom_view');
+    }
+    else{
+      return theme('custom_view', array('check' => 'yes' ) );
+    }
+  }
+}
+
+
+?>

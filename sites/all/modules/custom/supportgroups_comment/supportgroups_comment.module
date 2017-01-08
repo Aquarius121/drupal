@@ -1,0 +1,266 @@
+<?php
+define('SUPPORTGROUPS_COMMENT_MODULE_WEB_PATH', drupal_get_path('module', 'supportgroups_comment'));
+define('SUPPORTGROUPS_COMMENT_USER_REGEX', '/@[a-zA-Z0-9\?\=]*[^\s|^\.]/');
+
+/**
+ * Function to tag users
+ * @param string $body
+*/
+function supportgroups_comment_tag_user($body) {
+  // Check to see if there is a pattern
+  preg_match_all(SUPPORTGROUPS_COMMENT_USER_REGEX, $body, $user_matches);
+  if( isset($user_matches) ){
+    foreach($user_matches as $k => $username) {
+      // If there is a match, then we will add a link to the user
+      if( isset($username) && count($username) > 0 ){
+        foreach( $username as $n => $name ){
+          // First we will strip the @ symbol
+          // Then we will call _supportgroups_comment_get_uid to get the uid
+          $replace = '';
+          $pattern = '';
+          $uid = _supportgroups_comment_get_uid( ltrim($name, '@') );
+          // get the user url
+          // Make sure that we get an actual uid
+          if( $uid != '' ){
+            $url = url( 'user/'.$uid, array( 'absolute' => TRUE ) );
+            $replace  = "<a href='".$url."'>".$name."</a>";
+            $pattern = "/".$name."/";
+            // return a filter version of the comment body
+            // add links if a user is tagged
+            $body = preg_replace( $pattern ,$replace , $body);
+          }
+        }
+      }
+    }
+  }
+  return $body;
+}
+
+
+
+
+/**
+ *  Helper function to get the uid from a username
+ * @param string $username
+ * @return int $uid
+*/
+function _supportgroups_comment_get_uid( $username ){
+  $uid = '';
+  $result = db_query("SELECT uid FROM {users}
+    WHERE name = :name", array( ':name' => $username ) );
+  foreach( $result as $row){
+    $uid = $row->uid;
+    break;
+  }
+  return $uid;
+}
+
+
+/**
+ * Function that returns the comment form
+ *
+ *
+*/
+function _supportgroups_comment_get_comment_form( $nid = 0, $pid = 0, $edit = FALSE , $cid = 0){
+  global $user;
+  // Check to see if we are editing a comment
+  if( $edit ){
+    // if we are editing a comment, then we need to pull in the edit form
+    $comment = comment_load($cid);
+  }
+  // Creating a new comment
+  else{
+    $comment = (object) array(
+      'uid' => $user->uid,
+      'nid' => $nid,
+      'pid' => $pid,
+      'name' => (isset($user->name) ? $user->name : ''),
+      'language' => LANGUAGE_NONE,
+    );
+  }
+
+  $form_state = array('build_info' => array('args' => array($comment)));
+
+  form_load_include($form_state, 'inc', 'comment', 'comment.pages');
+  $form = drupal_build_form('comment_node_group_post_form', $form_state);
+  return drupal_render($form);
+}
+
+
+/**
+ *  Implementation of form alter
+ *
+ */
+function supportgroups_comment_form_alter( &$form, &$form_state, $form_id){
+  switch($form_id) {
+    case 'comment_node_group_post_form':
+
+      if( $form['cid']['#value'] != '' ){
+        $form['#id'] = 'comment-node-group-post-form-cid-'.$form['cid']['#value'];
+      }
+      elseif( $form['pid']['#value'] != 0){
+        $form['#id'] = 'comment-node-group-post-form-pid-'.$form['pid']['#value'];
+        $form['#action'] = '/comment/reply/'.$form['nid']['#value'];
+      }
+      else{
+        $form['#action'] = '/comment/reply/'.$form['nid']['#value'];
+        $form['#id'] = 'comment-node-group-post-form-'.$form['nid']['#value'];
+      }
+      $form['#attached'] = array(
+        'js' => array(
+          SUPPORTGROUPS_COMMENT_MODULE_WEB_PATH . '/js/supportgroups_comment.js',
+        )
+      );
+
+      // Hide fields
+      $form['comment_body']['und'][0]['#title'] = '';
+      $form['actions']['preview']['#access'] = FALSE;
+      $form['actions']['submit']['#value'] = t('Post');
+      $form['author']['#access'] = FALSE;
+      $form['notify_settings']['#access'] = FALSE;
+
+      // Add placeholder text
+      $form['comment_body']['und'][0]['#attributes'] = array(
+        'placeholder' => t('Write a Comment...'),
+      );
+      
+      // add ajax callback after form submit to deliver content back to page
+      $form['actions']['submit']['#ajax'] = array(
+          'callback' => 'supportgroups_comment_group_node_callback',
+          'wrapper' => 'comment-node-group-post-form',
+          'method' => 'replace',
+          'progress' => array(
+            'message' => t('Submitting your post'),
+          ),
+      );
+
+      $form['#validate'][] = 'supportgroups_comment_form_validate';
+
+      break;
+    }
+}
+
+/**
+ *  Comment Validation
+ */
+function supportgroups_comment_form_validate( $form, &$form_state ){
+
+  // Take down the information to see if this
+  // is a new node form or an edit node form
+  if( $form_state['values']['cid'] == '' ){
+    $form_state['values']['commentstate'] = 'New Comment';
+  }
+  else{
+    $form_state['values']['commentstate'] = 'Edit Comment';
+  }
+}
+/**
+*  recreates the node form
+*/
+function supportgroups_comment_group_node_callback($form, &$form_state) {
+  global $user;
+  $commands = array();
+  $error = false;
+  $returned_messages = '';
+
+  $get_messages = drupal_get_messages(NULL, TRUE);
+
+  if(count($get_messages)) {
+    $returned_messages .= "<div class='messages'>";
+
+    if (isset($get_messages['error']) && count($get_messages['error'])) {
+      $error = true;
+    }
+
+    foreach($get_messages as $type => $messages) {
+      foreach($messages as $key => $message) {
+        $returned_messages .= '<div class="message '.$type.'">' . $message . '</div>';
+      }
+    }
+  }
+  
+  // Show an error message if the form has not been submitted
+  $message = "Your post has been received.";
+  // Ajax action for a new comment
+  if($form_state['values']['commentstate'] == 'New Comment'){
+    // If there is an error, then return that
+    if($error){
+      // return messages error
+      if( $form_state['values']['pid']){
+        // return message to the reply to a comment
+        $commands[] = ajax_command_prepend('#comment-node-group-post-form-pid-'.$form_state['values']['pid'], $returned_messages);      
+      }
+      else{
+        // return a message to a reply to a discussion
+        $commands[] = ajax_command_prepend('#comment-node-group-post-form-'.$form_state['values']['nid'], $returned_messages);
+      }
+    }
+    else{
+      $val_str = $form_state['values']['comment_body']['und'][0]['value'];
+      $flag_email = false;
+      preg_match("/[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,3})/i", $val_str, $matches);
+      for($i = 0; $i< count($matches); $i++){
+       if(filter_var($matches[$i], FILTER_VALIDATE_EMAIL) != "")
+        $flag_email = true;
+      }
+      $nid = $form_state['values']['nid'];
+      if($flag_email == true && $nid && strlen($nid) > 0){
+     
+        // Send the email.
+        $params = array(
+          'subject' => "Possible Spam",
+          'body' => "Possible Spam detected: <br><br> <a href='http://www.supportgroups.com/node/".$nid."'>link here</a> <br> <a href='http://www.supportgroups.com/user/".$user->uid."'>user link</a>",
+        );
+      
+        db_query("INSERT INTO spam_list (uid, nid) VALUES (:uid, :nid)", array( ':uid' => $user->uid, ':nid' => $nid));
+        //drupal_mail('supportgroups_node', 'notice', "info@supportgroups.com", language_default(), $params);
+
+      }
+      // clear fields
+      $commands[] = supportgroups_comment_command_supportgroups_comment_clear("#comment-node-group-post-form-".$form_state['values']['nid'], $form_state['values']['nid'], $form_state['values']['cid']);
+    }
+  }
+  // Ajax action for an edit form page
+  elseif($form_state['values']['commentstate'] == 'Edit Comment'){
+    // add message
+    $commands[] = ajax_command_replace("#comment-node-group-post-form-cid-".$form_state['values']['cid'], $form_state['values']['comment_body']['und'][0]['value']);
+    // clear fields
+    // reload discussion body
+    $body = 'test';
+    $cid = $form_state['values']['cid'];
+      // Get content of discussion
+      $commands[] = supportgroups_comment_command_supportgroups_editcomment_clear("#comment-node-group-post-form-cid-".$form_state['values']['cid'], $body, $cid);
+  }
+  // add commands to an associative array to be run in order when returned to the page
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+
+
+/**
+ * Implementation of Drupal Ajax Framework command
+ * @param string $selector
+ * @return array
+ */
+function supportgroups_comment_command_supportgroups_comment_clear($selector, $nid, $cid) {
+  return array(
+      'command' => 'supportgroups_comment_clear',
+      'data' => array('selector' => $selector, 'nid' => $nid, 'cid' => $cid),
+  );
+}
+
+
+/**
+ * Implementation of Drupal Ajax Framework command
+ * @param string $selector
+ * @param string $body
+ * @return array
+ */
+function supportgroups_comment_command_supportgroups_editcomment_clear($selector, $body, $cid) {
+  return array(
+      'command' => 'supportgroups_editcomment_clear',
+      'data' => array('selector' => $selector),
+      'body' => $body,
+      'cid' => $cid
+  );
+}

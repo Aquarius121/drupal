@@ -1,0 +1,27 @@
+/* css for blogs page */
+
+.node-type-blog h1 {
+color:#333333; }
+.node-type-blog p {
+margin-bottom:1.0em; }
+
+.blog-list,
+.node-type-blog .node {
+	background: #ffffff;
+	margin-bottom: 0.5em;
+	padding: 1.0em 1.0em 5px 1.0em;
+	border-radius: 10px;
+	border-top: 1px solid #dddddd;
+	border-right: 3px solid #dddddd;
+	border-bottom: 3px solid #dddddd;
+	border-left: 1px solid #dddddd;
+	font-size: 1.4em;
+	clear: left;
+	min-height: 110px; }
+	.blog-list img {
+		float: left;
+		border: 1px solid #dddddd;
+		margin-right: 1em; }
+
+.blog-title {
+	font-weight:bold; }

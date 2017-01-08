@@ -1,0 +1,486 @@
+/*
+	CSS for supportfeed_new module
+
+	SG green #239948
+	background tan #F0F0E8
+*/
+
+/* 'Support Feed' heading */
+.profile dt {}
+
+.page-user h1 {
+	font-size:1.2em; }
+
+/* round corners of all feed images */ 
+#activity-items-wrapper img {
+	border-radius:5px; }
+
+ /* style post */
+.activity-item-wrapper {
+	background:white; 
+	margin-bottom:0.5em;
+	padding:1.0em 1.0em 5px 1.0em;
+	border-radius:10px;
+	border-top:1px solid #dd	dddd;
+	border-right:3px solid #dddddd;
+	border-bottom:3px solid #dddddd;
+	border-left:1px solid #dddddd; }
+
+.not-logged-in .activity-item-wrapper {
+	padding-bottom:25px; }
+
+/* style user info */
+.activity-item-userinfo, .activity-item-comment-userinfo {
+	font-size:1.3em;
+	line-height:1.7; }
+	.activity-item-userinfo img, .activity-item-comment-userinfo img {
+		float:left;
+		margin:0 0.7em 0.5em 0;
+		border:1px solid #e2e2d2; }
+
+/* keep username link black */
+.activity-item-body,
+.activity-item-comment-body {
+	clear:left; }
+
+/* separate text from image in image  post; post font size */
+.activity-item-body-text {
+	font-size:1.4em;
+	display:block; }
+
+/* comment font size */
+.activity-item-comment-body {
+	font-size:1.4em;}
+.activity-item-comment-body textarea {
+	font-size:1.0em;}
+
+/* make body text link black for anonymous users */
+.not-logged-in .activity-item-body a {
+	color:#444444; }
+
+/* Hide text over approx 250 characters */
+.showmoretext{
+  height: 4.5em;
+  overflow:hidden; }
+/* show 4x as much for discussion node pages */
+.node-type-group-post .showmoretext{
+  height: 17.5em;
+  overflow:hidden; }
+
+.showmorebutton, .showmorebutton-comment {
+	display:block;
+	font-size:1.3em;
+	text-align:right;
+	font-weight:bold;
+	color:#239948;
+	margin:0 0 0.5em 0;
+	padding-bottom:0.5em;
+	border-bottom:1px dotted #cccccc; }
+	 .showmorebutton-comment {
+		 border:none;
+		 padding-top:0.2em; }
+	.showmorebutton:hover, .showmorebutton-comment:hover {
+		cursor:pointer; }
+
+/* hide at first before rollover */
+.activity-item-options,
+.comment-options {
+	display:none; }
+
+/* position heart and comment icons to the right; style flag, edit, delete icons */
+.activity-item-options,
+.activity-item-info,
+.activity-item-comment-info,
+.comment-options {
+	float:right; }
+	.activity-item-options span,
+	.activity-item-options span a,
+	.comment-options span a,
+	.comment-options span {
+		width:20px;
+		height:20px;
+		display: inline-block;
+	    float: none; }
+
+/* Flag activity and comments */
+.activity-item-options-flag a,
+.activity-item-options-comment-flag a {
+	background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-flag-gray.png) no-repeat center; }
+	.activity-item-options-flag a:hover,
+	.activity-item-options-comment-flag a:hover {
+		background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-flag-black.png) no-repeat center;
+		cursor:pointer; }
+	.activity-item-options-comment-flag a.unflag-action,
+	.activity-item-options-flag a.unflag-action {
+			background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-flag-red.png) no-repeat center; }
+	.comment-options .flag-throbber,
+	.activity-item-options .flag-throbber {width:0; }
+
+
+/* delete items icon */
+.activity-item-options-delete,
+.activity-item-comments-options-delete {
+	background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-delete-gray.png) no-repeat center; }
+	.activity-item-options-delete:hover,
+	.activity-item-comments-options-delete:hover {
+		background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-delete-black.png) no-repeat center;
+		cursor:pointer; }
+
+/* edit items icon */
+.activity-item-options-edit,
+.activity-item-comments-options-edit {
+	background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-edit-gray.png) no-repeat center; }
+	.activity-item-options-edit:hover,
+	.activity-item-comments-options-edit:hover {
+		background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-edit-black.png) no-repeat center;
+		cursor:pointer; }
+
+/* style heart and comment icons */
+.activity-item-info-hearts a:link,
+.flag-like-comments a:link {
+	display:inline-block;
+	font-size:1.2em;
+	color:#ffc0c0;
+	letter-spacing:2px; }
+	.activity-item-info-hearts a:hover,
+	.flag-like-comments a:hover {color:red; }
+	.liked a:link {color:red; }
+span.activity-item-info-comments {
+	font-size:1.2em;
+	text-align:left;
+	height:20px;
+	display:inline-block;
+	background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-comments.png) no-repeat top left;
+	padding-left:18px; }
+
+/* non-functioning heart for anonymous */
+.heart {
+	font-size:1.2em;
+	color:pink; }
+
+/* new activity alert bubble at top of page if browser scrolled down */
+#recent-activity-wrapper {
+	display: none;
+	line-height: 10em;
+	text-align: center;
+	width: 16em;
+	height: 10em;
+	position: fixed;
+	top: 75px;
+	left:2.0em;
+	padding: 0 1.0em;
+	border: 1px solid #cccccc; 
+	border-radius: 50%;
+	background-color:#cfcfcf;
+	background-image: -moz-radial-gradient(45px 45px 45deg, circle cover, white 0%, #e4e4e4 100%, #cfcfcf 95%);
+	background-image: -webkit-radial-gradient(45px 45px, circle cover, #FFF, #CFCFCF);
+	background-image: radial-gradient(45px 45px 45deg, circle cover, white 0%, #e4e4e4 100%, #cfcfcf 95%); }
+	#recent-activity-wrapper a {
+		display: block;
+		color:#239948; }
+
+/* style 'view more' and 'view more comments' bars */
+.show-more-comments {
+	clear:right;
+	margin-bottom:0.5em; }
+	.show-more-comments:hover {
+		cursor:pointer; }
+
+	.past-activity-wrapper, .show-more-comments {
+		background-color:#dddddd;
+		/* IE10 */ 
+		background-image: -ms-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+		/* Mozilla Firefox */ 
+		background-image: -moz-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+		/* Opera */ 
+		background-image: -o-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+		/* Webkit (Safari/Chrome 10) */ 
+		background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0, #ffffff), color-stop(1, #dddddd));
+		/* Webkit (Chrome 11+) */ 
+		background-image: -webkit-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+		/* Proposed W3C Markup */ 
+		background-image: linear-gradient(top, #ffffff 0%, #dddddd 100%);
+		/* IE6-9 */ 
+		filter:  progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#dddddd');
+		text-align:center;
+		border:1px solid #eeeeee;
+		-moz-border-radius: 4px;
+		-webkit-border-radius: 4px;
+		-o-border-radius: 4px;
+		-ms-border-radius: 4px;
+		-khtml-border-radius: 4px;
+		border-radius: 4px;
+		-moz-box-shadow: 0 2px 2px #bbbbbb;
+		-webkit-box-shadow: 0 2px 2px #bbbbbb;
+		-o-box-shadow: 0 2px 2px #bbbbbb;
+		box-shadow: 0 2px 2px #bbbbbb;
+		height:3.0em;
+		line-height:3.0em; }
+		.past-activity-wrapper a {
+			color:#666666;
+			display:block;
+			height:3.0em; }
+
+/* style post comments */
+.activity-item-comments-wrapper {
+	clear:right; }
+.activity-item-comment-wrapper {
+	background:#f2f2e7;
+	border-bottom:2px solid white;
+	padding:0.5em; }
+.reply-to-a-comment {margin-left:1.0em; }
+
+.comment-postbutton {
+	display:inline-block;
+	font-size:1.2em;
+	text-transform:uppercase;
+	font-weight:bold;
+	padding:0 0 0.5em 0;
+	color:#999999; }
+		.comment-postbutton:hover {
+			color:green;
+			cursor:pointer; }
+
+/* style post comment area */
+	.field-name-comment-body,
+	.anonymous-comment-form textarea {
+		background: #fafafa;
+		border: 2px solid #d7d7d7;
+		border-radius: 7px;
+		clear:right;
+		padding:0.5em;
+		width:98%; }
+		.form-textarea-wrapper textarea.form-textarea {
+			border: none;
+			resize: vertical;
+			height:60px;
+			padding-left: 60px; }
+			.grippie {display:none; }
+
+.anonymous-comment-form ::-webkit-input-placeholder {
+    color: lightcoral; }
+.anonymous-comment-form :-moz-placeholder {
+    color: lightcoral; }
+.anonymous-comment-form :-ms-input-placeholder {
+    color: lightcoral; }
+ 
+
+
+/* style 'Reply' */
+.comment-form-reply-button {
+	font-size:1.3em;
+	font-weight:bold;
+	display:inline-block; }
+	.comment-form-reply-button:hover {
+		cursor:pointer; }
+.comment-form .form-actions {
+	padding:0;
+	margin:0.5em 0; }
+body.mobile .comment-form .form-actions .message {
+  font-size: .75em;
+}
+/* Style add a comment link */
+.comment-form a.add-a-comment {
+  display: block;
+  text-align: center;
+  font-size: 1.65em;
+  font-weight: bold;
+}
+
+/* style delete post/comment popup confirmation */
+.deletecommentcontainer,
+.deletediscussioncontainer {
+	/*  Hide comment edit options until rollover */
+	z-index:1000;
+	display: none;
+	font-size:1.3em;
+	text-align: center;
+	font-weight:normal;
+	letter-spacing:normal;
+	color:#444444;
+	position: absolute;
+	width:35%; 
+	left: 80px;
+	padding:0.5em 0.5em 1.0em 0.5em;
+	border:1px solid #cccccc;
+	border-radius:7px;
+	background-color:#dddddd;	
+	/* IE10 */ 
+	background-image: -ms-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Mozilla Firefox */ 
+	background-image: -moz-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Opera */ 
+	background-image: -o-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Webkit (Safari/Chrome 10) */ 
+	background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0, #ffffff), color-stop(1, #dddddd));
+	/* Webkit (Chrome 11+) */ 
+	background-image: -webkit-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Proposed W3C Markup */ 
+	background-image: linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* IE6-9 */ 
+	filter:  progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#dddddd'); }
+.deletecommentcontainer { 
+	left: 110px;
+	margin-top: 2em; }
+
+.deletecommentcontainer p, .deletediscussioncontainer p {
+	margin-bottom:15px;
+	font-size:105%; }
+	.activity-item-options span.orangebutton,
+	.activity-item-options span.graybutton,
+	.comment-options span.orangebutton,
+	.comment-options span.graybutton {
+		font-weight:bold;
+		width:auto;
+		height:auto;
+		padding:0.4em 1.0em;
+		cursor:pointer; }
+/* Hide comment reply box */
+.comment-form-container{
+  display:none;
+}
+.activity-item-wrapper.load-icon,
+.activity-item-comment-wrapper.load-icon,
+.comment-form-container.load-icon {
+  display:block;
+  min-height: 40px;
+  background:url(/sites/all/modules/custom/supportgroups_feed/images/ajax-loader-activity.gif) no-repeat center;
+  margin:0 auto;
+}
+.activity-item-comment-wrapper.load-icon {
+  background-position: center 25px;
+  background-color: #f2f2e7;
+}
+.activity-item-wrapper.load-icon {
+  background-position: center 25px;
+  background-color: #ffffff;
+  padding-top: 40px;
+}
+.comment-error {
+  color: red;
+  font-size: 1.5em;
+  text-align: center;
+}
+
+/* Hide mini profile info box */
+.user-profile-mini-block{
+  display:none;
+}
+.user-profile-mini-block-comment{
+  display:none;
+}
+
+/* Discussion edit options */
+.activity-item-options{
+  display:none;
+	z-index:1000; }
+
+/* rollover mini profile */
+.user-profile-mini-block, .user-profile-mini-block-comment {
+	position:absolute;
+	padding:0.5em;
+	margin-top:-25px;
+	width:300px;
+	border:1px solid #cccccc;
+	border-radius:7px;
+	background-color:#dddddd;	
+	/* IE10 */ 
+	background-image: -ms-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Mozilla Firefox */ 
+	background-image: -moz-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Opera */ 
+	background-image: -o-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Webkit (Safari/Chrome 10) */ 
+	background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0, #ffffff), color-stop(1, #dddddd));
+	/* Webkit (Chrome 11+) */ 
+	background-image: -webkit-linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* Proposed W3C Markup */ 
+	background-image: linear-gradient(top, #ffffff 0%, #dddddd 100%);
+	/* IE6-9 */ 
+	filter:  progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#dddddd'); }
+	.mini-profile-name {
+		display:inline-block;}
+	.user_badges {
+		font-size:2.0em;
+		line-height:0.8em; }
+	.mini-profile-bio {
+		font-weight:normal;
+		display:block;
+		margin-left:87px;
+		line-height:1.4; }
+	.mini-profile-relationship {
+		text-align:center;
+		font-weight:normal;
+		display:block;
+		padding-top:10px; }
+
+/* Style system messages */
+.block-supportgroups-node div.message,
+.activity-item-wrapper div.message {
+	background:none;
+	font-size:1.2em; }
+
+/* animated 'loading' gif */
+.past-activity-wrapper-container.loading .past-activity-wrapper{
+  display:none; }
+
+.past-activity-wrapper-container.loading .waiting-icon {
+	background:url(/sites/all/modules/custom/supportgroups_feed/images/ajax-loader-activity.gif) no-repeat center;
+	height:40px;
+	width:40px;
+	margin:0 auto; }
+
+.show-more-comments-container.loading .waiting-icon {
+  background:url(/sites/all/modules/custom/supportgroups_feed/images/ajax-loader-comment.gif) no-repeat center;
+	height:30px;
+	width:30px;
+	margin:0 auto; }
+
+.show-more-comments-container.loading .show-more-comments{
+  display:none; }
+
+.comment-closed .comment-form-reply-button{
+  display:none;
+}
+
+/* latest posts below discussion node */
+.view-display-id-block_2 {
+	margin-top:4.0em; }
+	.view-display-id-block_2 h2 {
+		font-size: 1.5em;
+		font-weight: bold;
+		padding: 0 0 .5em 0;
+		color: #999999;
+		text-shadow: 1px 1px 1px white; }
+
+.more-posts {
+	background: #ffffff;
+	margin-bottom: 1.0em;
+	padding: 1.0em 1.0em 2.0em 1.0em;
+	border-radius: 10px;
+	border-top: 1px solid #dddddd;
+	border-right: 3px solid #dddddd;
+	border-bottom: 3px solid #dddddd;
+	border-left: 1px solid #dddddd;}
+	.more-posts:hover {
+		background:#f5f5f5; }
+	.more-posts .user-picture img {
+		float:left;
+		width:75px;
+		height:75px;
+		margin:0 0.7em 0.5em 0;
+		border:1px solid #e2e2d2; }
+	.more-posts .username {
+		font-weight:bold; }
+	.more-posts .body {
+		margin-left:86px;
+		font-size:1.4em; }
+	.more-posts .comments {
+		font-size:1.2em;
+		float:right;
+		width:20px;
+		height:20px;
+		display:inline-block;
+		background:url(/sites/all/modules/custom/supportgroups_feed/images/icon-comments.png) no-repeat top left;
+		text-align:left;
+		padding-left:25px; }
